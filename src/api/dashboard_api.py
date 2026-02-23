@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import List, Optional
 
+import requests as http_requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -256,6 +257,52 @@ def trigger_scout(speaker_id: Optional[str] = Query(None)):
         return {"status": "started", "message": "Scout running for all active speakers"}
 
 
+# ── Email ──────────────────────────────────────────────────
+
+def _send_welcome_email(email: str, full_name: str, speaker_id: str):
+    """Send welcome email with speaker_id using Resend API."""
+    resend_key = os.getenv('RESEND_API_KEY', '')
+    if not resend_key:
+        logger.warning(f"[EMAIL] No RESEND_API_KEY set. Skipping welcome email for {speaker_id}")
+        return
+
+    email_from = os.getenv('EMAIL_FROM', 'SpeakerAgent.AI <onboarding@resend.dev>')
+    frontend_url = os.getenv('FRONTEND_URL', 'https://frontend-production-4a8a.up.railway.app')
+
+    try:
+        resp = http_requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {resend_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'from': email_from,
+                'to': [email],
+                'subject': f'Welcome to SpeakerAgent.AI — Your Speaker ID',
+                'html': (
+                    f'<h2>Welcome to SpeakerAgent.AI, {full_name}!</h2>'
+                    f'<p>Your account has been created successfully. Here is your Speaker ID:</p>'
+                    f'<div style="background:#f0f4f8;padding:16px 24px;border-radius:8px;text-align:center;margin:24px 0;">'
+                    f'<code style="font-size:24px;font-weight:bold;color:#1e40af;">{speaker_id}</code>'
+                    f'</div>'
+                    f'<p>Use this ID to log in to your dashboard at any time:</p>'
+                    f'<p><a href="{frontend_url}/login" style="color:#2563eb;">Open Your Dashboard</a></p>'
+                    f'<p>Our AI Scout is now being configured to find speaking engagements matched to your profile. '
+                    f'You\'ll start seeing leads in your dashboard soon!</p>'
+                    f'<br><p>— The SpeakerAgent.AI Team</p>'
+                ),
+            },
+            timeout=10,
+        )
+        if resp.status_code in (200, 201):
+            logger.info(f"[EMAIL] Welcome email sent to {email} for {speaker_id}")
+        else:
+            logger.error(f"[EMAIL] Failed to send: {resp.status_code} {resp.text}")
+    except Exception as e:
+        logger.error(f"[EMAIL] Error sending welcome email: {e}")
+
+
 # ── Speaker ─────────────────────────────────────────────────
 
 @app.post("/api/speakers/register")
@@ -297,6 +344,13 @@ def register_speaker(body: SpeakerRegistration):
     record = at.create_speaker(fields)
     if not record:
         raise HTTPException(status_code=500, detail="Failed to create speaker")
+
+    # Send welcome email with speaker_id (non-blocking)
+    threading.Thread(
+        target=_send_welcome_email,
+        args=(body.email, body.full_name, speaker_id),
+        daemon=True,
+    ).start()
 
     return {
         "speaker_id": speaker_id,
