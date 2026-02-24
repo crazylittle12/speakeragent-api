@@ -27,11 +27,79 @@ logger = logging.getLogger(__name__)
 
 # ── Scheduler ───────────────────────────────────────────────
 
+def _ensure_profile_exists(speaker_id: str, profile_path: str) -> str:
+    """Ensure a speaker profile JSON exists. Rebuild from Airtable if missing.
+
+    Returns the (possibly updated) profile_path.
+    """
+    import sys
+    p = Path(profile_path)
+    if p.exists():
+        return profile_path
+
+    print(f"[SCOUT] Profile file missing: {profile_path}. Rebuilding from Airtable...", file=sys.stderr, flush=True)
+    try:
+        at = get_airtable()
+        record = at.get_speaker(speaker_id)
+        if not record:
+            print(f"[SCOUT] Speaker {speaker_id} not found in Airtable either!", file=sys.stderr, flush=True)
+            return profile_path  # Will fail in run_scout, but at least we tried
+
+        fields = record.get('fields', {})
+
+        # Parse topics from JSON string stored in Airtable
+        topics = []
+        raw_topics = fields.get('topics', '')
+        if raw_topics:
+            try:
+                topic_list = json.loads(raw_topics) if isinstance(raw_topics, str) else raw_topics
+                for t in topic_list:
+                    topics.append({'topic': t, 'description': ''})
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Parse target_industries
+        industries = []
+        raw_ind = fields.get('target_industries', '')
+        if raw_ind:
+            try:
+                industries = json.loads(raw_ind) if isinstance(raw_ind, str) else raw_ind
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        profile = {
+            'full_name': fields.get('full_name', speaker_id),
+            'credentials': '',
+            'professional_title': fields.get('tagline', ''),
+            'years_experience': fields.get('years_experience', 0),
+            'book_title': '',
+            'topics': topics if topics else [{'topic': 'General', 'description': ''}],
+            'target_industries': industries,
+            'target_geography': fields.get('location', 'National (US)'),
+            'min_honorarium': fields.get('min_honorarium', 0),
+            'discussion_points': [t['topic'] for t in topics][:10],
+        }
+        if fields.get('bio'):
+            profile['bio'] = fields['bio']
+
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, 'w') as f:
+            json.dump(profile, f, indent=2)
+        print(f"[SCOUT] Rebuilt profile for {speaker_id} from Airtable data", file=sys.stderr, flush=True)
+
+    except Exception as e:
+        print(f"[SCOUT] Failed to rebuild profile for {speaker_id}: {e}", file=sys.stderr, flush=True)
+
+    return profile_path
+
+
 def _run_scout_for_speaker(speaker_id: str, profile_path: str):
     """Run scout pipeline for a single speaker."""
     import sys
     try:
         from src.agent.scout import run_scout
+        # Ensure profile exists (rebuild from Airtable if container was redeployed)
+        profile_path = _ensure_profile_exists(speaker_id, profile_path)
         print(f"[SCOUT] Starting scout for {speaker_id} with profile {profile_path}", file=sys.stderr, flush=True)
         summary = run_scout(
             profile_path=profile_path,
