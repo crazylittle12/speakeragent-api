@@ -143,7 +143,7 @@ def run_scout(
         logger.info(f"  Score: {match_score}/100 → {triage}")
         logger.info(f"  Best topic: {best_topic}")
 
-        # Step 3d: Generate hook (skip for GREEN)
+        # Step 3d: Generate hook (skip for RED — poor match)
         hook = ''
         cta = ''
         if match_score >= 35:
@@ -158,7 +158,7 @@ def run_scout(
             cta = pitch_result.get('cta', '')
             logger.info(f"  Hook: {hook[:80]}...")
         else:
-            logger.info(f"  Hook: SKIPPED (GREEN lead)")
+            logger.info(f"  Hook: SKIPPED (RED lead, score < 35)")
 
         # Step 3e: Build Airtable payload
         lead_payload = {

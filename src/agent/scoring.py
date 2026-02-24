@@ -27,13 +27,18 @@ PAY_RANGES = {
 
 
 def classify_triage(score: int) -> str:
-    """Assign RED/YELLOW/GREEN based on score."""
+    """Assign GREEN/YELLOW/RED based on score.
+
+    GREEN = good match (score >= 65), hooks generated
+    YELLOW = warm match (score 35-64), hooks generated
+    RED = poor match (score < 35), hooks skipped
+    """
     if score >= 65:
-        return 'RED'
+        return 'GREEN'
     elif score >= 35:
         return 'YELLOW'
     else:
-        return 'GREEN'
+        return 'RED'
 
 
 def estimate_pay(org_type: str) -> str:

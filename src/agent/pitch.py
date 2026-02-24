@@ -1,7 +1,7 @@
 """Hook generator using Claude API.
 
 Generates unique, conference-specific pitch hooks for qualified leads.
-Skips hook generation for GREEN (low-score) leads.
+Skips hook generation for RED (low-score, < 35) leads.
 """
 
 import logging

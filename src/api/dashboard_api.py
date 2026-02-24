@@ -11,6 +11,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 from typing import List, Optional
 
 import requests as http_requests
@@ -303,6 +304,47 @@ def _send_welcome_email(email: str, full_name: str, speaker_id: str):
         logger.error(f"[EMAIL] Error sending welcome email: {e}")
 
 
+def _create_profile_and_run_scout(speaker_id: str, body):
+    """Create a speaker profile JSON from registration data and trigger scout."""
+    try:
+        # Build profile dict matching the format expected by scout pipeline
+        topics = []
+        if body.topics:
+            for t in body.topics:
+                topics.append({'topic': t, 'description': ''})
+
+        profile = {
+            'full_name': body.full_name,
+            'credentials': '',
+            'professional_title': body.tagline or '',
+            'years_experience': body.years_experience or 0,
+            'book_title': '',
+            'topics': topics if topics else [{'topic': 'General', 'description': ''}],
+            'target_industries': body.target_industries or [],
+            'target_geography': body.location or 'National (US)',
+            'min_honorarium': body.min_honorarium or 0,
+        }
+
+        # Parse credentials from bio if available
+        if body.bio:
+            profile['credentials'] = ''
+            # Store full bio for context
+            profile['bio'] = body.bio
+
+        # Save profile JSON
+        profile_dir = Path('config/speaker_profiles')
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_path = profile_dir / f'{speaker_id}.json'
+        with open(profile_path, 'w') as f:
+            json.dump(profile, f, indent=2)
+
+        logger.info(f"[SCOUT] Profile created for {speaker_id}, triggering scout run")
+        _run_scout_for_speaker(speaker_id, str(profile_path))
+
+    except Exception as e:
+        logger.error(f"[SCOUT] Failed to create profile / run scout for {speaker_id}: {e}", exc_info=True)
+
+
 # ── Speaker ─────────────────────────────────────────────────
 
 @app.post("/api/speakers/register")
@@ -349,6 +391,13 @@ def register_speaker(body: SpeakerRegistration):
     threading.Thread(
         target=_send_welcome_email,
         args=(body.email, body.full_name, speaker_id),
+        daemon=True,
+    ).start()
+
+    # Trigger first scout run immediately (non-blocking)
+    threading.Thread(
+        target=_create_profile_and_run_scout,
+        args=(speaker_id, body),
         daemon=True,
     ).start()
 
