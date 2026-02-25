@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import requests as http_requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -224,6 +224,19 @@ def get_airtable() -> AirtableAPI:
 
 class StatusUpdate(BaseModel):
     status: str
+
+
+class SpeakerUpdate(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    tagline: Optional[str] = None
+    bio: Optional[str] = None
+    topics: Optional[List[str]] = None
+    target_industries: Optional[List[str]] = None
+    min_honorarium: Optional[int] = None
+    years_experience: Optional[int] = None
+    location: Optional[str] = None
+    website: Optional[str] = None
 
 
 class SpeakerRegistration(BaseModel):
@@ -515,6 +528,97 @@ def get_speaker(speaker_id: str):
     return {"id": record["id"], **record.get("fields", {})}
 
 
+@app.put("/api/speaker/{speaker_id}")
+def update_speaker(speaker_id: str, body: SpeakerUpdate):
+    """Update speaker profile. Only non-None fields are changed."""
+    at = get_airtable()
+    record = at.get_speaker(speaker_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+
+    record_id = record["id"]
+    fields = {}
+
+    if body.full_name is not None:
+        fields['full_name'] = body.full_name
+    if body.email is not None:
+        fields['email'] = body.email
+    if body.tagline is not None:
+        fields['tagline'] = body.tagline
+    if body.bio is not None:
+        fields['bio'] = body.bio
+    if body.topics is not None:
+        fields['topics'] = json.dumps(body.topics)
+    if body.target_industries is not None:
+        fields['target_industries'] = json.dumps(body.target_industries)
+    if body.min_honorarium is not None:
+        fields['min_honorarium'] = body.min_honorarium
+    if body.years_experience is not None:
+        fields['years_experience'] = body.years_experience
+    if body.location is not None:
+        fields['location'] = body.location
+    if body.website is not None:
+        fields['website'] = body.website
+
+    if not fields:
+        return {"id": record_id, **record.get("fields", {})}
+
+    result = at.update_speaker(record_id, fields)
+    if not result:
+        raise HTTPException(status_code=500, detail="Failed to update speaker")
+
+    # Rebuild profile JSON so scout uses updated data
+    _rebuild_profile_json(speaker_id, result.get("fields", {}))
+
+    return {"id": result["id"], **result.get("fields", {})}
+
+
+def _rebuild_profile_json(speaker_id: str, fields: dict):
+    """Rebuild speaker profile JSON file from Airtable fields."""
+    try:
+        topics = []
+        raw_topics = fields.get('topics', '')
+        if raw_topics:
+            try:
+                topic_list = json.loads(raw_topics) if isinstance(raw_topics, str) else raw_topics
+                for t in topic_list:
+                    topics.append({'topic': t, 'description': ''})
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        industries = []
+        raw_ind = fields.get('target_industries', '')
+        if raw_ind:
+            try:
+                industries = json.loads(raw_ind) if isinstance(raw_ind, str) else raw_ind
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        profile = {
+            'full_name': fields.get('full_name', speaker_id),
+            'credentials': '',
+            'professional_title': fields.get('tagline', ''),
+            'years_experience': fields.get('years_experience', 0),
+            'book_title': '',
+            'topics': topics if topics else [{'topic': 'General', 'description': ''}],
+            'target_industries': industries,
+            'target_geography': fields.get('location', 'National (US)'),
+            'min_honorarium': fields.get('min_honorarium', 0),
+            'discussion_points': [t['topic'] for t in topics][:10],
+        }
+        if fields.get('bio'):
+            profile['bio'] = fields['bio']
+
+        profile_dir = Path('config/speaker_profiles')
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_path = profile_dir / f'{speaker_id}.json'
+        with open(profile_path, 'w') as f:
+            json.dump(profile, f, indent=2)
+        logger.info(f"Rebuilt profile JSON for {speaker_id}")
+    except Exception as e:
+        logger.error(f"Failed to rebuild profile JSON for {speaker_id}: {e}")
+
+
 # ── Dashboard (combined) ────────────────────────────────────
 
 @app.get("/api/dashboard/{speaker_id}")
@@ -548,3 +652,112 @@ def dashboard(speaker_id: str):
         "stats": stats,
         "top_leads": top_leads,
     }
+
+
+# ── Admin ──────────────────────────────────────────────────
+
+def _check_admin(request: Request):
+    """Verify admin password from Authorization header."""
+    admin_pw = os.getenv('ADMIN_PASSWORD', '')
+    if not admin_pw:
+        raise HTTPException(status_code=503, detail="Admin not configured")
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer ') or auth[7:] != admin_pw:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+class AdminLogin(BaseModel):
+    password: str
+
+
+@app.post("/api/admin/login")
+def admin_login(body: AdminLogin):
+    """Verify admin password."""
+    admin_pw = os.getenv('ADMIN_PASSWORD', '')
+    if not admin_pw:
+        raise HTTPException(status_code=503, detail="Admin not configured")
+    if body.password != admin_pw:
+        raise HTTPException(status_code=401, detail="Invalid password")
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/overview")
+def admin_overview(request: Request):
+    """High-level business metrics."""
+    _check_admin(request)
+    at = get_airtable()
+
+    speakers = at.list_active_speakers()
+    all_leads = at.get_leads()
+
+    total_score = 0
+    leads_today = 0
+    today_str = date.today().isoformat()
+    triage_counts = {'RED': 0, 'YELLOW': 0, 'GREEN': 0}
+
+    for r in all_leads:
+        f = r.get('fields', {})
+        total_score += f.get('Match Score', 0)
+        # Date Found is stored as ISO datetime
+        df = f.get('Date Found', '')
+        if isinstance(df, str) and df.startswith(today_str):
+            leads_today += 1
+        triage = f.get('Lead Triage', '')
+        if triage in triage_counts:
+            triage_counts[triage] += 1
+
+    return {
+        "total_speakers": len(speakers),
+        "total_leads": len(all_leads),
+        "avg_score": round(total_score / max(len(all_leads), 1), 1),
+        "leads_today": leads_today,
+        "triage_breakdown": triage_counts,
+    }
+
+
+@app.get("/api/admin/speakers")
+def admin_speakers(request: Request):
+    """List all speakers with lead counts and avg scores."""
+    _check_admin(request)
+    at = get_airtable()
+
+    speakers = at.list_active_speakers()
+    result = []
+    for s in speakers:
+        f = s.get('fields', {})
+        sid = f.get('speaker_id', '')
+        if not sid:
+            continue
+
+        # Get lead stats for this speaker
+        stats = at.get_lead_stats(sid)
+
+        result.append({
+            "id": s["id"],
+            "speaker_id": sid,
+            "full_name": f.get('full_name', ''),
+            "email": f.get('email', ''),
+            "created_at": f.get('created_at', ''),
+            "status": f.get('status', ''),
+            "lead_count": stats.get('total', 0),
+            "avg_score": stats.get('avg_score', 0),
+        })
+
+    return {"speakers": result}
+
+
+@app.get("/api/admin/speakers/{speaker_id}/leads")
+def admin_speaker_leads(speaker_id: str, request: Request):
+    """Get all leads for a specific speaker (admin view)."""
+    _check_admin(request)
+    at = get_airtable()
+
+    records = at.get_leads(speaker_id=speaker_id)
+    leads = [
+        {"id": r["id"], **r.get("fields", {})}
+        for r in records
+    ]
+    # Sort by score desc
+    leads.sort(key=lambda l: l.get("Match Score", 0), reverse=True)
+
+    return {"speaker_id": speaker_id, "count": len(leads), "leads": leads}

@@ -14,6 +14,7 @@ from config.settings import Settings
 from src.agent.scraper import generate_search_queries, web_search, scrape_page
 from src.agent.scoring import score_lead_with_claude, classify_triage
 from src.agent.pitch import generate_hook
+from src.agent.verifier import verify_lead
 from src.api.airtable import AirtableAPI
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ def run_scout(
         'skipped_duplicate': 0,
         'skipped_scrape_fail': 0,
         'skipped_score_fail': 0,
+        'skipped_rejected': 0,
         'triage_counts': {'RED': 0, 'YELLOW': 0, 'GREEN': 0},
         'leads': [],
     }
@@ -147,7 +149,21 @@ def run_scout(
 
         _log(f"[SCOUT] [{i+1}] Score: {match_score}/100 → {triage} | Topic: {best_topic}")
 
-        # Step 3d: Generate hook (skip for RED — poor match)
+        # Step 3d: Verify lead quality
+        verification = verify_lead(
+            lead_data={'Conference Name': conf_name, 'Match Score': match_score, 'Event Location': scraped.get('location', '')},
+            scraped=scraped,
+            profile=profile,
+            api_key=settings.CLAUDE_API_KEY,
+        )
+        _log(f"[SCOUT] [{i+1}] Verification: {verification['status']} — {verification.get('notes', '')}")
+
+        if verification['status'] == 'Rejected':
+            summary['skipped_rejected'] += 1
+            _log(f"[SCOUT] [{i+1}] SKIP: Rejected by verifier")
+            continue
+
+        # Step 3e: Generate hook (skip for RED — poor match)
         hook = ''
         cta = ''
         if match_score >= 35:
@@ -164,7 +180,7 @@ def run_scout(
         else:
             _log(f"[SCOUT] [{i+1}] Hook SKIPPED (RED lead, score < 35)")
 
-        # Step 3e: Build Airtable payload
+        # Step 3f: Build Airtable payload
         lead_payload = {
             'Conference Name': conf_name,
             'Date Found': date.today().isoformat(),
@@ -177,6 +193,8 @@ def run_scout(
             'CTA': cta,
             'Lead Status': 'New',
             'speaker_id': speaker_id,
+            'Verification Status': verification['status'],
+            'Verification Notes': verification.get('notes', ''),
         }
 
         # Add optional fields only if present
@@ -192,7 +210,7 @@ def run_scout(
         if event_date_iso:
             lead_payload['Event Date'] = event_date_iso
 
-        # Step 3f: Push to Airtable
+        # Step 3g: Push to Airtable
         if dry_run:
             _log(f"[SCOUT] [{i+1}] DRY RUN — would push: {conf_name}")
             summary['pushed'] += 1
@@ -222,6 +240,7 @@ def run_scout(
     _log(f"[SCOUT]   Skipped (duplicate): {summary['skipped_duplicate']}")
     _log(f"[SCOUT]   Skipped (scrape fail): {summary['skipped_scrape_fail']}")
     _log(f"[SCOUT]   Skipped (score fail): {summary['skipped_score_fail']}")
+    _log(f"[SCOUT]   Skipped (rejected):  {summary['skipped_rejected']}")
     _log(f"[SCOUT]   Triage: GREEN={summary['triage_counts']['GREEN']} "
          f"YELLOW={summary['triage_counts']['YELLOW']} "
          f"RED={summary['triage_counts']['RED']}")

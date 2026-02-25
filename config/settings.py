@@ -21,6 +21,9 @@ class Settings:
     # Deployment / CORS
     CORS_ORIGINS = os.getenv('CORS_ORIGINS', 'http://localhost:3000')
 
+    # Admin
+    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')
+
     # Scheduler
     ENABLE_CRON = os.getenv('ENABLE_CRON', 'true').lower() == 'true'
     SCOUT_SPEAKER_ID = os.getenv('SCOUT_SPEAKER_ID', 'leigh_vinocur')

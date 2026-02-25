@@ -98,9 +98,9 @@ EVALUATE this conference on 6 criteria, each scored 0-10:
 
 1. TOPIC_RELEVANCE (weight 25%): How well does this conference match one of the speaker's 3 topics? 10 = exact match, 0 = no connection at all.
 2. ORG_TYPE (weight 20%): What type of organization is this? Score based on likelihood of paying speakers. 10 = hospital/pharma/major association, 5 = corporate mid-market, 0 = free meetup.
-3. AUDIENCE_SIZE (weight 15%): Signals of audience size. 10 = national conference 1000+, 5 = regional 200-500, 0 = unknown/tiny.
-4. BUDGET_SIGNALS (weight 15%): Evidence of speaker payment. 10 = mentions honorarium/fee, 5 = professional conference (likely pays), 0 = "volunteer speakers".
-5. GEOGRAPHIC_MATCH (weight 10%): Does location match speaker's preference (National US)? 10 = US or Virtual, 5 = international but English-speaking, 0 = clear mismatch.
+3. AUDIENCE_SIZE (weight 10%): Signals of audience size. 10 = national conference 1000+, 5 = regional 200-500, 0 = unknown/tiny.
+4. BUDGET_SIGNALS (weight 10%): Evidence of speaker payment. 10 = mentions honorarium/fee, 5 = professional conference (likely pays), 0 = "volunteer speakers".
+5. GEOGRAPHIC_MATCH (weight 20%): Does location match speaker's target geography? 10 = perfect geographic match or Virtual, 5 = same country but different region, 0 = clear geographic mismatch with speaker's preference.
 6. TIMING_FIT (weight 15%): Is the event 2-6 months out? 10 = 2-6 months out, 7 = 6-12 months, 3 = 1-2 months or 12+, 0 = already passed.
 
 Also determine:
@@ -145,8 +145,8 @@ Return ONLY valid JSON (no markdown, no explanation):
         timing = scores.get('timing_fit', 0)
 
         match_score = round(
-            (topic * 0.25 + org * 0.20 + audience * 0.15 +
-             budget * 0.15 + geo * 0.10 + timing * 0.15) * 10
+            (topic * 0.25 + org * 0.20 + audience * 0.10 +
+             budget * 0.10 + geo * 0.20 + timing * 0.15) * 10
         )
         match_score = max(0, min(100, match_score))
 
@@ -201,8 +201,8 @@ def _fallback_score(scraped: dict, profile: dict) -> dict:
     org_score = 5  # Unknown
 
     match_score = round(
-        (topic_score * 0.25 + org_score * 0.20 + audience_score * 0.15 +
-         budget_score * 0.15 + geo_score * 0.10 + timing_score * 0.15) * 10
+        (topic_score * 0.25 + org_score * 0.20 + audience_score * 0.10 +
+         budget_score * 0.10 + geo_score * 0.20 + timing_score * 0.15) * 10
     )
 
     return {
