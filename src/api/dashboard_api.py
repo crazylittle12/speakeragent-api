@@ -7,6 +7,7 @@ Includes APScheduler for daily scout cron job.
 import json
 import logging
 import os
+import sys
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -23,6 +24,19 @@ from config.settings import Settings
 from src.api.airtable import AirtableAPI
 
 logger = logging.getLogger(__name__)
+
+# Configure logging if not already configured
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=Settings.LOG_LEVEL,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler(sys.stderr)]
+    )
+
+logger.setLevel(Settings.LOG_LEVEL)
+
+VALID_LEAD_STATUSES = {'New', 'Contacted', 'Replied', 'Booked', 'Passed', 'Rejected'}
+
 
 
 # ── Scheduler ───────────────────────────────────────────────
@@ -224,7 +238,8 @@ def get_airtable() -> AirtableAPI:
 
 class StatusUpdate(BaseModel):
     status: str
-
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
 
 class SpeakerUpdate(BaseModel):
     full_name: Optional[str] = None
@@ -320,19 +335,18 @@ def get_lead(lead_id: str):
 
 @app.put("/api/leads/{lead_id}/status")
 def update_lead_status(lead_id: str, body: StatusUpdate):
-    """Update lead status (New -> Contacted -> Replied -> Booked -> Passed)."""
-    valid = {'New', 'Contacted', 'Replied', 'Booked', 'Passed'}
-    if body.status not in valid:
+    """Update lead status (New -> Contacted -> Replied -> Booked -> Passed -> Rejected)."""
+    if body.status not in VALID_LEAD_STATUSES:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid status. Must be one of: {', '.join(valid)}"
+            detail=f"Invalid status. Must be one of: {', '.join(sorted(VALID_LEAD_STATUSES))}"
         )
     at = get_airtable()
-    result = at.update_lead(lead_id, {'Lead Status': body.status})
+    # logger.info(f"Lead {lead_id} updating status to {body.status}")
+    result = at.update_lead(lead_id, {'Lead Status': body.status, 'Update Notes': body.notes or '', 'Updated By': body.updated_by or '', 'Update Timestamp': date.today().isoformat()})
     if not result:
         raise HTTPException(status_code=500, detail="Failed to update lead")
     return {"id": result["id"], **result.get("fields", {})}
-
 
 # ── Scout (manual trigger) ─────────────────────────────────
 
@@ -622,7 +636,7 @@ def _rebuild_profile_json(speaker_id: str, fields: dict):
 # ── Dashboard (combined) ────────────────────────────────────
 
 @app.get("/api/dashboard/{speaker_id}")
-def dashboard(speaker_id: str):
+def dashboard(speaker_id: str, status: Optional[str] = Query(None)):
     """Combined dashboard data: profile + stats + top leads."""
     at = get_airtable()
 
@@ -630,7 +644,7 @@ def dashboard(speaker_id: str):
     stats = at.get_lead_stats(speaker_id)
 
     # Top 5 leads by score
-    all_leads = at.get_leads(speaker_id=speaker_id)
+    all_leads = at.get_leads(speaker_id=speaker_id, status=status or '')
     sorted_leads = sorted(
         all_leads,
         key=lambda r: r.get('fields', {}).get('Match Score', 0),
