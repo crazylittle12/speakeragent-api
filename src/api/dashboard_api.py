@@ -323,16 +323,7 @@ class SpeakerRegistration(BaseModel):
 @app.get("/health")
 def health_check():
     cron_active = _scheduler is not None and _scheduler.running if _scheduler else False
-    try:
-        at = get_airtable()
-        ok = at.health_check()
-        return {
-            "status": "healthy" if ok else "degraded",
-            "airtable": ok,
-            "cron_active": cron_active,
-        }
-    except Exception as e:
-        return {"status": "unhealthy", "error": str(e), "cron_active": cron_active}
+    return {"status": "ok", "cron_active": cron_active}
 
 
 class EmailAttachment(BaseModel):
