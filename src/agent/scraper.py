@@ -191,11 +191,12 @@ def scrape_page(url: str, timeout: int = 10) -> Optional[dict]:
 
 
 def generate_search_queries(profile: dict) -> list[str]:
-    """Generate 10 search queries from a speaker profile."""
+    """Generate search queries for conferences, podcasts, corporate events, and local gigs."""
     topics = [t['topic'] for t in profile.get('topics', [])]
     discussion_points = profile.get('discussion_points', [])
     industries = profile.get('target_industries', [])
     name = profile.get('full_name', '')
+    geo = profile.get('target_geography', 'US')
 
     # Ensure industries is never empty — derive from topics/bio if needed
     if not industries:
@@ -213,31 +214,57 @@ def generate_search_queries(profile: dict) -> list[str]:
         keywords = [name or 'speaker']
 
     queries = []
+    # Use current year + 1 or just hardcode for now as per original
+    year = "2026"
 
-    # Queries 1-3: keyword + industry + "call for speakers" + 2026
+    # 1. Conferences (Traditional)
     for i in range(3):
         kw = keywords[i % len(keywords)]
         ind = industries[i % len(industries)]
-        queries.append(f'{kw} {ind} "call for speakers" conference 2026')
+        queries.append(f'{kw} {ind} "call for speakers" conference {year}')
 
-    # Queries 4-6: keyword + "keynote speaker" + 2026
-    for i in range(3):
-        kw = keywords[(i + 3) % len(keywords)]
-        ind = industries[(i + 3) % len(industries)]
-        queries.append(f'{kw} "keynote speaker" {ind} conference 2026')
-
-    # Queries 7-9: keyword + geography + "speaking opportunity" + 2026
-    geo = profile.get('target_geography', 'US')
+    # 2. Podcasts (New)
+    # "guest host", "looking for guests", "interview"
     for i in range(3):
         kw = keywords[(i + 1) % len(keywords)]
-        queries.append(f'{kw} "speaking opportunity" {geo} 2026')
+        queries.append(f'{kw} podcast "looking for guests"')
+        queries.append(f'{kw} podcast "guest application"')
+        queries.append(f'top {kw} podcasts interview guest')
 
-    # Query 10: speaker name specific
-    queries.append(
-        f'"{name}" type of events "looking for speakers"'
-    )
+    # 3. Corporate / Associations (New)
+    for i in range(3):
+        kw = keywords[(i + 2) % len(keywords)]
+        ind = industries[(i + 2) % len(industries)]
+        queries.append(f'{ind} association "call for presenters" {kw}')
+        queries.append(f'{kw} corporate "lunch and learn" speaker')
+        queries.append(f'{ind} corporate event {kw} speaker')
 
-    return queries[:10]
+    # 4. Local / Geotargeted (New)
+    for i in range(3):
+        kw = keywords[(i + 3) % len(keywords)]
+        queries.append(f'{kw} speaker {geo} event {year}')
+        queries.append(f'{kw} meetup {geo} "looking for speakers"')
+        queries.append(f'local chapter {geo} {kw} speaker')
+
+    # 5. General Keynote
+    for i in range(2):
+        kw = keywords[(i + 4) % len(keywords)]
+        ind = industries[(i + 4) % len(industries)]
+        queries.append(f'{kw} "keynote speaker" {ind} {year}')
+
+    # Speaker name specific
+    if name:
+        queries.append(f'"{name}" events "looking for speakers"')
+
+    # Deduplicate preserving order
+    seen = set()
+    deduped = []
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            deduped.append(q)
+
+    return deduped[:15]
 
 
 def web_search(queries: list[str],
