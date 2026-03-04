@@ -487,61 +487,32 @@ def trigger_scout(speaker_id: Optional[str] = Query(None)):
 # ── Email ──────────────────────────────────────────────────
 
 def _send_welcome_email(email: str, full_name: str, speaker_id: str, attachments: Optional[List[EmailAttachment]] = None):
-    """Send welcome email with speaker_id using SendGrid API."""
-    import sys
-    print(f"[EMAIL] Starting welcome email for {speaker_id} to {email}", file=sys.stderr, flush=True)
-
-    sendgrid_key = os.getenv('SENDGRID_API_KEY', '')
-    if not sendgrid_key:
-        print(f"[EMAIL] No SENDGRID_API_KEY set. Skipping welcome email for {speaker_id}", file=sys.stderr, flush=True)
-        return
-
-    email_from = os.getenv('EMAIL_FROM', 'noreply@speakeragent.ai')
+    """Send a welcome email to a newly registered speaker."""
     frontend_url = os.getenv('FRONTEND_URL', 'https://frontend-production-4a8a.up.railway.app')
 
-    payload = {
-        'personalizations': [{'to': [{'email': email}]}],
-        'from': {'email': email_from, 'name': 'SpeakerAgent.AI'},
-        'subject': 'Welcome to SpeakerAgent.AI — Your Speaker ID',
-        'content': [{'type': 'text/html', 'value': (
-            f'<h2>Welcome to SpeakerAgent.AI, {full_name}!</h2>'
-            f'<p>Your account has been created successfully. Here is your Speaker ID:</p>'
-            f'<div style="background:#f0f4f8;padding:16px 24px;border-radius:8px;text-align:center;margin:24px 0;">'
-            f'<code style="font-size:24px;font-weight:bold;color:#1e40af;">{speaker_id}</code>'
-            f'</div>'
-            f'<p>Use this ID to log in to your dashboard at any time:</p>'
-            f'<p><a href="{frontend_url}/login" style="color:#2563eb;">Open Your Dashboard</a></p>'
-            f'<p>Our AI Scout is now being configured to find speaking engagements matched to your profile. '
-            f'You\'ll start seeing leads in your dashboard soon!</p>'
-            f'<br><p>— The SpeakerAgent.AI Team</p>'
-        )}],
-    }
-
-    if attachments:
-        payload['attachments'] = [
-            {'filename': a.filename, 'content': a.content, 'type': a.type}
-            for a in attachments
-        ]
+    html_content = f'''
+<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.7;color:#1a1a1a;max-width:600px;">
+  <h2 style="color:#1e40af;margin-bottom:8px;">Welcome to SpeakerAgent.AI, {full_name}!</h2>
+  <p style="margin:0 0 16px 0;">We're thrilled to have you on board. Your profile is all set up and our AI Scout is already being configured to find speaking engagements that match your expertise.</p>
+  <p style="margin:0 0 24px 0;">You'll start seeing curated leads in your dashboard soon — conferences, podcasts, and corporate events tailored specifically to your topics and industry.</p>
+  <p style="margin:0 0 24px 0;">
+    <a href="{frontend_url}" style="background:#1e40af;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold;">Go to Your Dashboard</a>
+  </p>
+  <p style="margin:0 0 4px 0;">Warm regards,</p>
+  <p style="margin:0;font-weight:bold;">The SpeakerAgent.AI Team</p>
+</div>'''
 
     try:
-        print(f"[EMAIL] Sending via SendGrid from={email_from} to={email}", file=sys.stderr, flush=True)
-        resp = http_requests.post(
-            'https://api.sendgrid.com/v3/mail/send',
-            headers={
-                'Authorization': f'Bearer {sendgrid_key}',
-                'Content-Type': 'application/json',
-            },
-            json=payload,
-            timeout=10,
-        )
-        print(f"[EMAIL] SendGrid response: {resp.status_code} {resp.text}", file=sys.stderr, flush=True)
-        if resp.status_code == 202:
-            logger.info(f"[EMAIL] Welcome email sent to {email} for {speaker_id}")
-        else:
-            logger.error(f"[EMAIL] Failed to send: {resp.status_code} {resp.text}")
+        send_email(SendEmailRequest(
+            to=[email],
+            subject='Welcome to SpeakerAgent.AI!',
+            content=html_content,
+            content_type='text/html',
+            attachments=attachments,
+        ))
+        logger.info(f"[EMAIL] Welcome email sent to {email} for {speaker_id}")
     except Exception as e:
-        print(f"[EMAIL] Error: {e}", file=sys.stderr, flush=True)
-        logger.error(f"[EMAIL] Error sending welcome email: {e}")
+        logger.error(f"[EMAIL] Error sending welcome email for {speaker_id}: {e}")
 
 
 def _send_outreach_email(at: AirtableAPI, lead_id: str, fields: dict):
@@ -657,6 +628,18 @@ def _create_profile_and_run_scout(speaker_id: str, body):
 def register_speaker(body: SpeakerRegistration):
     """Register a new speaker. Generates a unique speaker_id."""
     at = get_airtable()
+
+    # Check for duplicate email
+    existing = at.get_speaker_by_email(body.email)
+    if existing:
+        existing_fields = existing.get('fields', {})
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "An account with this email already exists.",
+                "speaker_id": existing_fields.get('speaker_id', ''),
+            }
+        )
 
     # Generate unique speaker_id: slug from name + short UUID
     name_slug = body.full_name.lower().replace(' ', '_').replace('.', '')
