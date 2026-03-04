@@ -265,7 +265,7 @@ def generate_search_queries(profile: dict) -> list[str]:
             seen.add(q)
             deduped.append(q)
 
-    return deduped[:15]
+    return deduped[:20]
 
 
 def web_search(queries: list[str],
@@ -296,15 +296,30 @@ def web_search(queries: list[str],
     else:
         print("[SEARCH] WARNING: No seed_urls_path provided", file=sys.stderr, flush=True)
 
-    # Try SerpAPI first, fall back to Bing
+    # Try SerpAPI first (all engines), fall back to Bing
     serp_key = os.getenv('SERP_API_KEY', '')
     if serp_key:
-        search_urls = _serpapi_search(queries, results_per_query, delay)
+        organic_urls = _serpapi_search(queries, results_per_query, delay)
+        events_urls = _serpapi_events_search(queries, delay)
+        news_urls = _serpapi_news_search(queries, min(results_per_query, 5), delay)
+        jobs_urls = _serpapi_jobs_search(queries, delay)
+        print(f"[SEARCH] SerpAPI: organic={len(organic_urls)} events={len(events_urls)} "
+              f"news={len(news_urls)} jobs={len(jobs_urls)}",
+              file=sys.stderr, flush=True)
+
+        # Merge all SerpAPI results (events + jobs first — highest signal)
+        search_urls = []
+        seen_search: set = set()
+        for u in events_urls + jobs_urls + organic_urls + news_urls:
+            if u not in seen_search:
+                seen_search.add(u)
+                search_urls.append(u)
+
         if not search_urls:
             print("[SEARCH] SerpAPI returned 0 results, falling back to Bing", file=sys.stderr, flush=True)
             search_urls = _bing_search(queries, results_per_query, delay)
         else:
-            print(f"[SEARCH] SerpAPI returned {len(search_urls)} URLs", file=sys.stderr, flush=True)
+            print(f"[SEARCH] SerpAPI total: {len(search_urls)} unique URLs", file=sys.stderr, flush=True)
     else:
         print("[SEARCH] No SERP_API_KEY, using Bing", file=sys.stderr, flush=True)
         search_urls = _bing_search(queries, results_per_query, delay)
@@ -343,9 +358,9 @@ def _load_seed_urls(path: str) -> list[str]:
 
 
 def _serpapi_search(queries: list[str],
-                    results_per_query: int = 5,
+                    results_per_query: int = 10,
                     delay: float = 1.0) -> list[str]:
-    """Search via SerpAPI (Google Search). Requires SERP_API_KEY env var."""
+    """Search via SerpAPI Google organic. Requires SERP_API_KEY env var."""
     serp_key = os.getenv('SERP_API_KEY', '')
     if not serp_key:
         return []
@@ -353,15 +368,16 @@ def _serpapi_search(queries: list[str],
     urls = []
     seen = set()
     for i, query in enumerate(queries):
-        logger.info(f"SerpAPI [{i+1}/{len(queries)}]: {query}")
+        logger.info(f"SerpAPI organic [{i+1}/{len(queries)}]: {query}")
         try:
             resp = requests.get(
                 'https://serpapi.com/search.json',
-                params={'q': query, 'api_key': serp_key, 'num': results_per_query, 'hl': 'en', 'gl': 'us'},
+                params={'q': query, 'api_key': serp_key, 'num': results_per_query,
+                        'hl': 'en', 'gl': 'us', 'engine': 'google'},
                 timeout=10,
             )
             if resp.status_code != 200:
-                logger.warning(f"SerpAPI {resp.status_code} for: {query}")
+                logger.warning(f"SerpAPI organic {resp.status_code} for: {query}")
                 continue
             for r in resp.json().get('organic_results', [])[:results_per_query]:
                 url = r.get('link', '')
@@ -369,11 +385,161 @@ def _serpapi_search(queries: list[str],
                     seen.add(url)
                     urls.append(url)
         except Exception as e:
-            logger.warning(f"SerpAPI failed for '{query}': {e}")
+            logger.warning(f"SerpAPI organic failed for '{query}': {e}")
         if i < len(queries) - 1:
             time.sleep(delay)
 
-    logger.info(f"SerpAPI found {len(urls)} unique URLs")
+    logger.info(f"SerpAPI organic found {len(urls)} unique URLs")
+    return urls
+
+
+def _serpapi_news_search(queries: list[str],
+                         results_per_query: int = 5,
+                         delay: float = 1.0) -> list[str]:
+    """Search via SerpAPI Google News (tbm=nws). Finds recent conference announcements."""
+    serp_key = os.getenv('SERP_API_KEY', '')
+    if not serp_key:
+        return []
+
+    # Prioritize queries that are most likely to surface conference news
+    news_queries = [
+        q for q in queries
+        if any(kw in q.lower() for kw in ['call for', 'conference', 'summit', 'event', 'podcast'])
+    ]
+    if not news_queries:
+        news_queries = queries[:5]
+    news_queries = news_queries[:8]  # Cap at 8 to avoid excessive API usage
+
+    urls = []
+    seen = set()
+    for i, query in enumerate(news_queries):
+        logger.info(f"SerpAPI news [{i+1}/{len(news_queries)}]: {query}")
+        try:
+            resp = requests.get(
+                'https://serpapi.com/search.json',
+                params={'q': query, 'api_key': serp_key, 'tbm': 'nws',
+                        'num': results_per_query, 'hl': 'en', 'gl': 'us'},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"SerpAPI news {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('news_results', [])[:results_per_query]:
+                url = r.get('link', '')
+                if url and url not in seen and not should_skip_url(url):
+                    seen.add(url)
+                    urls.append(url)
+        except Exception as e:
+            logger.warning(f"SerpAPI news failed for '{query}': {e}")
+        if i < len(news_queries) - 1:
+            time.sleep(delay)
+
+    logger.info(f"SerpAPI news found {len(urls)} unique URLs")
+    return urls
+
+
+def _serpapi_events_search(queries: list[str],
+                           delay: float = 1.0) -> list[str]:
+    """Search via SerpAPI Google Events engine. Returns actual event listing URLs."""
+    serp_key = os.getenv('SERP_API_KEY', '')
+    if not serp_key:
+        return []
+
+    # Use queries most relevant to event discovery
+    event_queries = [
+        q for q in queries
+        if any(kw in q.lower() for kw in ['conference', 'summit', 'event', 'meetup', 'keynote'])
+    ]
+    if not event_queries:
+        event_queries = queries[:5]
+    event_queries = event_queries[:6]  # Cap at 6 event queries
+
+    urls = []
+    seen = set()
+    for i, query in enumerate(event_queries):
+        logger.info(f"SerpAPI events [{i+1}/{len(event_queries)}]: {query}")
+        try:
+            resp = requests.get(
+                'https://serpapi.com/search.json',
+                params={'q': query, 'api_key': serp_key, 'engine': 'google_events',
+                        'hl': 'en', 'gl': 'us'},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"SerpAPI events {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('events_results', []):
+                url = r.get('link', '')
+                if url and url not in seen and not should_skip_url(url):
+                    seen.add(url)
+                    urls.append(url)
+                # Also grab ticket/registration links — these are the actual event pages
+                for ticket in r.get('ticket_info', []):
+                    turl = ticket.get('link', '')
+                    if turl and turl not in seen and not should_skip_url(turl):
+                        seen.add(turl)
+                        urls.append(turl)
+        except Exception as e:
+            logger.warning(f"SerpAPI events failed for '{query}': {e}")
+        if i < len(event_queries) - 1:
+            time.sleep(delay)
+
+    logger.info(f"SerpAPI events found {len(urls)} unique URLs")
+    return urls
+
+
+def _serpapi_jobs_search(queries: list[str],
+                         delay: float = 1.0) -> list[str]:
+    """Search via SerpAPI Google Jobs. Surfaces speaking gigs posted as job listings.
+
+    Many event organizers and podcast producers post "call for speakers" or
+    "podcast guest" openings through job boards indexed by Google Jobs.
+    """
+    serp_key = os.getenv('SERP_API_KEY', '')
+    if not serp_key:
+        return []
+
+    # Jobs engine works best with role-like phrasing
+    jobs_queries = [
+        q for q in queries
+        if any(kw in q.lower() for kw in ['speaker', 'keynote', 'presenter', 'podcast'])
+    ]
+    if not jobs_queries:
+        jobs_queries = queries[:4]
+    jobs_queries = jobs_queries[:5]  # Cap at 5
+
+    urls = []
+    seen = set()
+    for i, query in enumerate(jobs_queries):
+        logger.info(f"SerpAPI jobs [{i+1}/{len(jobs_queries)}]: {query}")
+        try:
+            resp = requests.get(
+                'https://serpapi.com/search.json',
+                params={'q': query, 'api_key': serp_key, 'engine': 'google_jobs',
+                        'hl': 'en', 'gl': 'us'},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"SerpAPI jobs {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('jobs_results', []):
+                # Primary: direct application/listing links
+                for opt in r.get('apply_options', []):
+                    turl = opt.get('link', '')
+                    if turl and turl not in seen and not should_skip_url(turl):
+                        seen.add(turl)
+                        urls.append(turl)
+                # Fallback: Google-hosted share link
+                share_link = r.get('share_link', '')
+                if share_link and share_link not in seen and not should_skip_url(share_link):
+                    seen.add(share_link)
+                    urls.append(share_link)
+        except Exception as e:
+            logger.warning(f"SerpAPI jobs failed for '{query}': {e}")
+        if i < len(jobs_queries) - 1:
+            time.sleep(delay)
+
+    logger.info(f"SerpAPI jobs found {len(urls)} unique URLs")
     return urls
 
 

@@ -92,7 +92,7 @@ def run_scout(
     # Step 2: Search for conference URLs
     seed_path = str(Path(profile_path).parent.parent / 'seed_urls.json')
     _log(f"[SCOUT] Seed URL path: {seed_path} (exists={Path(seed_path).exists()})")
-    urls = web_search(queries, results_per_query=3, delay=2.0, seed_urls_path=seed_path)
+    urls = web_search(queries, results_per_query=10, delay=1.5, seed_urls_path=seed_path)
     summary['total_urls'] = len(urls)
     _log(f"[SCOUT] Found {len(urls)} unique URLs to process")
 
