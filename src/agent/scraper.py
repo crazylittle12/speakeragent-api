@@ -5,6 +5,7 @@ Also handles Google search query generation and execution.
 """
 
 import logging
+import os
 import re
 import time
 from typing import Optional
@@ -268,15 +269,15 @@ def generate_search_queries(profile: dict) -> list[str]:
 
 
 def web_search(queries: list[str],
-               results_per_query: int = 3,
-               delay: float = 2.0,
+               results_per_query: int = 5,
+               delay: float = 1.0,
                seed_urls_path: str = '') -> list[str]:
     """Search the web and collect unique URLs.
 
     ALWAYS includes seed URLs to guarantee a minimum set of results.
-    Also tries search backends for fresh results:
-    1. googlesearch-python
-    2. Bing scraping via requests
+    Search backends (in priority order):
+    1. SerpAPI (Google Search) — requires SERP_API_KEY
+    2. Bing scraping — fallback when no API key
     """
     import sys
     all_urls = []
@@ -295,13 +296,18 @@ def web_search(queries: list[str],
     else:
         print("[SEARCH] WARNING: No seed_urls_path provided", file=sys.stderr, flush=True)
 
-    # Try googlesearch-python for fresh results
-    search_urls = _google_search(queries, results_per_query, delay)
-    if not search_urls:
-        print("[SEARCH] Google returned 0 results, trying Bing", file=sys.stderr, flush=True)
+    # Try SerpAPI first, fall back to Bing
+    serp_key = os.getenv('SERP_API_KEY', '')
+    if serp_key:
+        search_urls = _serpapi_search(queries, results_per_query, delay)
+        if not search_urls:
+            print("[SEARCH] SerpAPI returned 0 results, falling back to Bing", file=sys.stderr, flush=True)
+            search_urls = _bing_search(queries, results_per_query, delay)
+        else:
+            print(f"[SEARCH] SerpAPI returned {len(search_urls)} URLs", file=sys.stderr, flush=True)
+    else:
+        print("[SEARCH] No SERP_API_KEY, using Bing", file=sys.stderr, flush=True)
         search_urls = _bing_search(queries, results_per_query, delay)
-
-    print(f"[SEARCH] Search engines returned {len(search_urls)} URLs", file=sys.stderr, flush=True)
 
     # Merge search results (deduplicated)
     for u in search_urls:
@@ -312,7 +318,7 @@ def web_search(queries: list[str],
     if not all_urls:
         print("[SEARCH] WARNING: No URLs found from any source!", file=sys.stderr, flush=True)
     else:
-        print(f"[SEARCH] Total URLs to process: {len(all_urls)} ({seed_count} seed + {len(search_urls)} search)", file=sys.stderr, flush=True)
+        print(f"[SEARCH] Total: {len(all_urls)} URLs ({seed_count} seed + {len(search_urls)} search)", file=sys.stderr, flush=True)
 
     return all_urls
 
@@ -336,31 +342,38 @@ def _load_seed_urls(path: str) -> list[str]:
         return []
 
 
-def _google_search(queries: list[str],
-                   results_per_query: int = 3,
-                   delay: float = 2.0) -> list[str]:
-    """Search via googlesearch-python."""
-    try:
-        from googlesearch import search as gsearch
-    except ImportError:
+def _serpapi_search(queries: list[str],
+                    results_per_query: int = 5,
+                    delay: float = 1.0) -> list[str]:
+    """Search via SerpAPI (Google Search). Requires SERP_API_KEY env var."""
+    serp_key = os.getenv('SERP_API_KEY', '')
+    if not serp_key:
         return []
 
     urls = []
     seen = set()
     for i, query in enumerate(queries):
-        logger.info(f"Google [{i+1}/{len(queries)}]: {query}")
+        logger.info(f"SerpAPI [{i+1}/{len(queries)}]: {query}")
         try:
-            results = list(gsearch(query, num_results=results_per_query))
-            for url in results:
-                if url not in seen and not should_skip_url(url):
+            resp = requests.get(
+                'https://serpapi.com/search.json',
+                params={'q': query, 'api_key': serp_key, 'num': results_per_query, 'hl': 'en', 'gl': 'us'},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"SerpAPI {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('organic_results', [])[:results_per_query]:
+                url = r.get('link', '')
+                if url and url not in seen and not should_skip_url(url):
                     seen.add(url)
                     urls.append(url)
         except Exception as e:
-            logger.warning(f"Google search failed: {e}")
+            logger.warning(f"SerpAPI failed for '{query}': {e}")
         if i < len(queries) - 1:
             time.sleep(delay)
 
-    logger.info(f"Google search found {len(urls)} unique URLs")
+    logger.info(f"SerpAPI found {len(urls)} unique URLs")
     return urls
 
 
