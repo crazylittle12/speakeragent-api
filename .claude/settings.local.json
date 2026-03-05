@@ -1,7 +1,25 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:airtable.com)"
+      "WebFetch(domain:airtable.com)",
+      "Bash(rm -rf .venv)",
+      "Bash(python -m venv .venv)",
+      "Bash(.venv/Scripts/pip install -r requirements.txt)",
+      "Bash(tasklist /fi \"imagename eq python.exe\")",
+      "Bash(tasklist /fi \"imagename eq uvicorn.exe\")",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 19692 /F)",
+      "Bash(taskkill /PID 47488 /F)",
+      "Bash(cmd /c \"taskkill /PID 19692 /F\")",
+      "Bash(cmd /c \"taskkill /PID 47488 /F\")",
+      "Bash(cmd /c \"taskkill /PID 19692 /F 2>&1 & taskkill /PID 47488 /F 2>&1\")",
+      "Bash(powershell -Command \"Stop-Process -Id 19692 -Force -ErrorAction SilentlyContinue; Stop-Process -Id 47488 -Force -ErrorAction SilentlyContinue; Write-Output ''Done''\")",
+      "Bash(powershell -Command \"Get-Process -Id 19692, 47488 | Select-Object Id, Name, CommandLine | Format-List\")",
+      "Bash(powershell -Command \"netstat -ano | Select-String '':8000''\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, State, OwningProcess\")",
+      "Bash(powershell -Command \"Stop-Process -Id 19692 -Force; Write-Output ''Killed 19692''\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 8000 | Select-Object OwningProcess\")",
+      "Bash(powershell -Command \"Get-Process -Id 47488 | Select-Object Id, Name, Path, CommandLine\")"
     ]
   }
 }

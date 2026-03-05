@@ -6,19 +6,19 @@
   "book_title": "",
   "topics": [
     {
-      "topic": "AI Triage: What the ER Teaches Us About Diagnostic Tech",
-      "description": "Drawing on 30+ years in emergency medicine, Dr. Camps examines how AI-assisted diagnostics mirror\u2014and sometimes fail\u2014the split-second triage logic clinicians have always relied on. Attendees leave with a framework for evaluating health tech tools through a frontline clinical lens.",
-      "audience": "Health tech founders, CMOs, digital health product teams"
+      "topic": "When Algorithms Miss: The Human Cost of AI Diagnostics",
+      "description": "Drawing on 30+ years of ER experience, Dr. Camps exposes the critical gaps between what AI diagnostic tools promise and what actually happens when patients arrive in crisis. He offers a frontline framework for building AI systems that augment rather than replace clinical judgment.",
+      "audience": "Health tech founders, clinical AI developers, and hospital innovation officers"
     },
     {
-      "topic": "Telemedicine in the Trauma Bay: Lessons From the Front Lines",
-      "description": "Emergency medicine has quietly become one of the most radical testing grounds for telehealth innovation. Dr. Camps delivers an unfiltered clinical perspective on where telemedicine saves lives\u2014and where it falls dangerously short.",
-      "audience": "Telehealth executives, policy leaders, digital health investors"
+      "topic": "Interoperability or Bust: Why ER Data Is Still Broken",
+      "description": "The emergency room is the ultimate stress test for health data exchange, and it still fails patients daily. Dr. Camps translates the chaos of real-time trauma care into a clear indictment of fragmented health IT infrastructure and what fixing it actually requires.",
+      "audience": "Health IT leaders, EHR vendors, and CMS ecosystem stakeholders"
     },
     {
-      "topic": "Wearables in the Wild: What ER Doctors See That Data Misses",
-      "description": "Patients increasingly arrive in emergency departments armed with wearable data\u2014and clinicians are navigating a new layer of noise versus signal. Dr. Camps offers a grounded, clinical take on the promise and peril of consumer health wearables.",
-      "audience": "Wearable tech companies, digital health innovators, clinical informaticists"
+      "topic": "Burnout at the Bedside: Technology's Role in the Clinician Crisis",
+      "description": "Health tech promised to reduce clinician burden, yet ER physicians are leaving medicine faster than ever. Dr. Camps delivers an unflinching look at how poorly designed technology contributes to frontline burnout and what human-centered design must fix.",
+      "audience": "Health tech developers, hospital HR and operations leaders, and workforce strategists"
     }
   ],
   "target_industries": [
@@ -27,9 +27,9 @@
   "target_geography": "US",
   "min_honorarium": 5000,
   "discussion_points": [
-    "AI Triage: What the ER Teaches Us About Diagnostic Tech",
-    "Telemedicine in the Trauma Bay: Lessons From the Front Lines",
-    "Wearables in the Wild: What ER Doctors See That Data Misses"
+    "When Algorithms Miss: The Human Cost of AI Diagnostics",
+    "Interoperability or Bust: Why ER Data Is Still Broken",
+    "Burnout at the Bedside: Technology's Role in the Clinician Crisis"
   ],
   "linkedin": "",
   "website": "",

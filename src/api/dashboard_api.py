@@ -27,15 +27,20 @@ from src.api.airtable import AirtableAPI
 
 logger = logging.getLogger(__name__)
 
-# Configure logging if not already configured
-if not logging.getLogger().handlers:
-    logging.basicConfig(
-        level=Settings.LOG_LEVEL,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler(sys.stderr)]
-    )
 
-logger.setLevel(Settings.LOG_LEVEL)
+def _configure_logging():
+    """Configure logging after uvicorn has finished setting up its own handlers."""
+    level = getattr(logging, Settings.LOG_LEVEL.upper(), logging.INFO)
+    root = logging.getLogger()
+    # Ensure root has at least one handler
+    if not root.handlers:
+        root.addHandler(logging.StreamHandler(sys.stderr))
+    root.setLevel(level)
+    fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    for h in root.handlers:
+        h.setFormatter(fmt)
+    logging.getLogger('src').setLevel(level)
+    logger.setLevel(level)
 
 VALID_LEAD_STATUSES = {'New', 'Contacted', 'Replied', 'Booked', 'Passed', 'Rejected'}
 
@@ -48,17 +53,16 @@ def _ensure_profile_exists(speaker_id: str, profile_path: str) -> str:
 
     Returns the (possibly updated) profile_path.
     """
-    import sys
     p = Path(profile_path)
     if p.exists():
         return profile_path
 
-    print(f"[SCOUT] Profile file missing: {profile_path}. Rebuilding from Airtable...", file=sys.stderr, flush=True)
+    logger.info(f"[SCOUT] Profile file missing: {profile_path}. Rebuilding from Airtable...")
     try:
         at = get_airtable()
         record = at.get_speaker(speaker_id)
         if not record:
-            print(f"[SCOUT] Speaker {speaker_id} not found in Airtable either!", file=sys.stderr, flush=True)
+            logger.warning(f"[SCOUT] Speaker {speaker_id} not found in Airtable either!")
             return profile_path  # Will fail in run_scout, but at least we tried
 
         fields = record.get('fields', {})
@@ -114,27 +118,26 @@ def _ensure_profile_exists(speaker_id: str, profile_path: str) -> str:
         p.parent.mkdir(parents=True, exist_ok=True)
         with open(p, 'w') as f:
             json.dump(profile, f, indent=2)
-        print(f"[SCOUT] Rebuilt profile for {speaker_id} from Airtable data", file=sys.stderr, flush=True)
+        logger.info(f"[SCOUT] Rebuilt profile for {speaker_id} from Airtable data")
 
     except Exception as e:
-        print(f"[SCOUT] Failed to rebuild profile for {speaker_id}: {e}", file=sys.stderr, flush=True)
+        logger.error(f"[SCOUT] Failed to rebuild profile for {speaker_id}: {e}")
 
     return profile_path
 
 
 def _run_scout_for_speaker(speaker_id: str, profile_path: str):
     """Run scout pipeline for a single speaker."""
-    import sys
     try:
         from src.agent.scout import run_scout
         # Ensure profile exists (rebuild from Airtable if container was redeployed)
         profile_path = _ensure_profile_exists(speaker_id, profile_path)
-        print(f"[SCOUT] Starting scout for {speaker_id} with profile {profile_path}", file=sys.stderr, flush=True)
+        logger.info(f"[SCOUT] Starting scout for {speaker_id} with profile {profile_path}")
         summary = run_scout(
             profile_path=profile_path,
             speaker_id=speaker_id,
         )
-        print(
+        logger.info(
             f"[SCOUT] Complete for {speaker_id}: "
             f"urls={summary.get('total_urls', 0)} "
             f"scraped={summary.get('scraped', 0)} "
@@ -142,12 +145,10 @@ def _run_scout_for_speaker(speaker_id: str, profile_path: str):
             f"pushed={summary.get('pushed', 0)} "
             f"dupes={summary.get('skipped_duplicate', 0)} "
             f"scrape_fail={summary.get('skipped_scrape_fail', 0)} "
-            f"score_fail={summary.get('skipped_score_fail', 0)}",
-            file=sys.stderr, flush=True,
+            f"score_fail={summary.get('skipped_score_fail', 0)}"
         )
         return summary
     except Exception as e:
-        print(f"[SCOUT] Failed for {speaker_id}: {e}", file=sys.stderr, flush=True)
         logger.error(f"[SCOUT] Failed for {speaker_id}: {e}", exc_info=True)
         return {'error': str(e)}
 
@@ -191,6 +192,7 @@ _scheduler = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start scheduler on startup, shut down on exit."""
+    _configure_logging()
     global _scheduler
     settings = Settings()
     if settings.ENABLE_CRON:
@@ -333,6 +335,7 @@ def health_check():
 
 
 class SendEmailRequest(BaseModel):
+    emailFrom: Optional[str] = None
     to: List[str]
     subject: str
     content: str
@@ -348,10 +351,12 @@ def send_email(body: SendEmailRequest):
         raise HTTPException(status_code=503, detail="SENDGRID_API_KEY not configured")
 
     email_from = os.getenv('EMAIL_FROM', 'tony@speakeragent.ai')
-
+    # email_from = body.emailFrom if body.emailFrom else default_from
+    # email_from =  default_from
+    logger.info(f"Preparing to send email from {email_from} to {body.to}")
     payload = {
         'personalizations': [{'to': [{'email': addr} for addr in body.to]}],
-        'from': {'email': email_from, 'name': 'SpeakerAgent.AI'},
+        'from': {'email': email_from},
         'subject': body.subject,
         'content': [{'type': body.content_type, 'value': body.content}],
     }
@@ -486,7 +491,7 @@ def trigger_scout(speaker_id: Optional[str] = Query(None)):
 
 # ── Email ──────────────────────────────────────────────────
 
-def _send_welcome_email(email: str, full_name: str, speaker_id: str, attachments: Optional[List[EmailAttachment]] = None):
+def _send_welcome_email(emailTo: str, full_name: str, speaker_id: str, attachments: Optional[List[EmailAttachment]] = None):
     """Send a welcome email to a newly registered speaker."""
     frontend_url = os.getenv('FRONTEND_URL', 'https://frontend-production-4a8a.up.railway.app')
 
@@ -504,24 +509,22 @@ def _send_welcome_email(email: str, full_name: str, speaker_id: str, attachments
 
     try:
         send_email(SendEmailRequest(
-            to=[email],
+            to=[emailTo],
             subject='Welcome to SpeakerAgent.AI!',
             content=html_content,
             content_type='text/html',
             attachments=attachments,
         ))
-        logger.info(f"[EMAIL] Welcome email sent to {email} for {speaker_id}")
+        logger.info(f"[EMAIL] Welcome email sent to {emailTo} for {speaker_id}")
     except Exception as e:
         logger.error(f"[EMAIL] Error sending welcome email for {speaker_id}: {e}")
 
 
-def _send_outreach_email(at: AirtableAPI, lead_id: str, fields: dict):
+def _send_outreach_email(emailFrom:str, at: AirtableAPI, lead_id: str, fields: dict):
     """Send outreach email to a conference contact when lead is marked Contacted."""
-    import sys
-
     contact_email = fields.get('Contact Email', '')
     if not contact_email:
-        print(f"[EMAIL] No contact email for lead {lead_id}, skipping outreach", file=sys.stderr, flush=True)
+        logger.info(f"[EMAIL] No contact email for lead {lead_id}, skipping outreach")
         return
 
     subject = fields.get('Suggested Talk', 'Speaking Opportunity')
@@ -536,7 +539,7 @@ def _send_outreach_email(at: AirtableAPI, lead_id: str, fields: dict):
             if speaker_record:
                 speaker_name = speaker_record.get('fields', {}).get('full_name', 'Speaker')
         except Exception as e:
-            print(f"[EMAIL] Failed to get speaker {speaker_id}: {e}", file=sys.stderr, flush=True)
+            logger.warning(f"[EMAIL] Failed to get speaker {speaker_id}: {e}")
 
     # Build body
     approval_message = fields.get('Approval Message', '')
@@ -562,6 +565,7 @@ def _send_outreach_email(at: AirtableAPI, lead_id: str, fields: dict):
 
     try:
         send_email(SendEmailRequest(
+            emailFrom= emailFrom,
             to=[contact_email],
             subject=subject,
             content=html_content,
@@ -709,24 +713,37 @@ def register_speaker(body: SpeakerRegistration):
 @app.get("/api/speaker/{speaker_id}")
 def get_speaker(speaker_id: str):
     """Get speaker profile from Airtable."""
+    logger.info(f"Fetching speaker {speaker_id} from Airtable")
+    print(f"Fetching speaker {speaker_id} from Airtable")
     at = get_airtable()
     record = at.get_speaker(speaker_id)
     if not record:
-        raise HTTPException(status_code=404, detail="Speaker not found")
+        raise HTTPException(status_code=404, detail="Speaker not foundxx")
     return {"id": record["id"], **record.get("fields", {})}
 
 
-def _fetch_trending_topics_from_serp(industries: list, credentials: str) -> str:
-    """Search SerpAPI for trending conference topics. Returns a formatted context string."""
-    serp_key = os.getenv('SERP_API_KEY', '')
-    if not serp_key:
-        return ''
-
+def _fetch_trending_topics(industries: list, credentials: str) -> str:
+    """Search for trending conference topics via SerpAPI or Serper. Returns a formatted context string."""
     industry_str = industries[0] if industries else credentials or 'professional development'
     queries = [
         f'trending conference keynote topics 2026 {industry_str}',
         f'most popular speaker topics {industry_str} conferences 2026',
     ]
+
+    snippets = _fetch_trending_topics_serpapi(queries)
+    if not snippets:
+        snippets = _fetch_trending_topics_serper(queries)
+
+    if not snippets:
+        return ''
+    return "REAL-WORLD TRENDING TOPICS FROM WEB (use as grounding):\n" + '\n'.join(snippets[:10])
+
+
+def _fetch_trending_topics_serpapi(queries: list) -> list:
+    """Fetch trending topic snippets via SerpAPI. Returns list of formatted strings."""
+    serp_key = os.getenv('SERP_API_KEY', '')
+    if not serp_key:
+        return []
 
     snippets = []
     for query in queries:
@@ -747,10 +764,40 @@ def _fetch_trending_topics_from_serp(industries: list, credentials: str) -> str:
         except Exception as e:
             logger.warning(f"[TOPICS] SerpAPI failed for '{query}': {e}")
 
-    if not snippets:
-        return ''
+    if snippets:
+        logger.info(f"[TOPICS] SerpAPI returned {len(snippets)} snippets")
+    return snippets
 
-    return "REAL-WORLD TRENDING TOPICS FROM WEB (use as grounding):\n" + '\n'.join(snippets[:10])
+
+def _fetch_trending_topics_serper(queries: list) -> list:
+    """Fetch trending topic snippets via Serper.dev. Returns list of formatted strings."""
+    serper_key = os.getenv('SERPER_API_KEY', '')
+    if not serper_key:
+        return []
+
+    snippets = []
+    for query in queries:
+        try:
+            resp = http_requests.post(
+                'https://google.serper.dev/search',
+                headers={'X-API-KEY': serper_key, 'Content-Type': 'application/json'},
+                json={'q': query, 'num': 5, 'gl': 'us', 'hl': 'en'},
+                timeout=8,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[TOPICS] Serper {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('organic', [])[:5]:
+                title = r.get('title', '')
+                snippet = r.get('snippet', '')
+                if title or snippet:
+                    snippets.append(f"- {title}: {snippet}")
+        except Exception as e:
+            logger.warning(f"[TOPICS] Serper failed for '{query}': {e}")
+
+    if snippets:
+        logger.info(f"[TOPICS] Serper returned {len(snippets)} snippets")
+    return snippets
 
 
 @app.get("/api/topics")
@@ -791,8 +838,8 @@ def suggest_topics(speaker_id: str = Query(...)):
     industries_str = ', '.join(industries) if industries else 'General'
 
     # Fetch live trending data from SerpAPI
-    serp_context = _fetch_trending_topics_from_serp(industries, credentials)
-    logger.info(f"[TOPICS] SerpAPI context {'fetched' if serp_context else 'unavailable'} for {speaker_id}")
+    serp_context = _fetch_trending_topics(industries, credentials)
+    logger.info(f"[TOPICS] Web context {'fetched' if serp_context else 'unavailable'} for {speaker_id}")
 
     prompt = f"""You are a speaking industry expert helping identify high-demand conference topics.
 

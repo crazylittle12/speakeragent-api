@@ -265,7 +265,7 @@ def generate_search_queries(profile: dict) -> list[str]:
             seen.add(q)
             deduped.append(q)
 
-    return deduped[:20]
+    return deduped[:10]
 
 
 def web_search(queries: list[str],
@@ -277,9 +277,8 @@ def web_search(queries: list[str],
     ALWAYS includes seed URLs to guarantee a minimum set of results.
     Search backends (in priority order):
     1. SerpAPI (Google Search) — requires SERP_API_KEY
-    2. Bing scraping — fallback when no API key
+    2. Bing scraping — fallback when no API keys
     """
-    import sys
     all_urls = []
     seen = set()
     seed_count = 0
@@ -292,20 +291,20 @@ def web_search(queries: list[str],
             if u not in seen:
                 seen.add(u)
                 all_urls.append(u)
-        print(f"[SEARCH] Loaded {seed_count} seed URLs as guaranteed base", file=sys.stderr, flush=True)
+        logger.info(f"[SEARCH] Loaded {seed_count} seed URLs as guaranteed base")
     else:
-        print("[SEARCH] WARNING: No seed_urls_path provided", file=sys.stderr, flush=True)
+        logger.warning("[SEARCH] No seed_urls_path provided")
 
-    # Try SerpAPI first (all engines), fall back to Bing
+    # Try SerpAPI first (all engines), then Serper, fall back to Bing
     serp_key = os.getenv('SERP_API_KEY', '')
+    serper_key = os.getenv('SERPER_API_KEY', '')
     if serp_key:
         organic_urls = _serpapi_search(queries, results_per_query, delay)
         events_urls = _serpapi_events_search(queries, delay)
         news_urls = _serpapi_news_search(queries, min(results_per_query, 5), delay)
         jobs_urls = _serpapi_jobs_search(queries, delay)
-        print(f"[SEARCH] SerpAPI: organic={len(organic_urls)} events={len(events_urls)} "
-              f"news={len(news_urls)} jobs={len(jobs_urls)}",
-              file=sys.stderr, flush=True)
+        logger.info(f"[SEARCH] SerpAPI: organic={len(organic_urls)} events={len(events_urls)} "
+                    f"news={len(news_urls)} jobs={len(jobs_urls)}")
 
         # Merge all SerpAPI results (events + jobs first — highest signal)
         search_urls = []
@@ -316,12 +315,29 @@ def web_search(queries: list[str],
                 search_urls.append(u)
 
         if not search_urls:
-            print("[SEARCH] SerpAPI returned 0 results, falling back to Bing", file=sys.stderr, flush=True)
+            logger.warning("[SEARCH] SerpAPI returned 0 results, falling back to Bing")
             search_urls = _bing_search(queries, results_per_query, delay)
         else:
-            print(f"[SEARCH] SerpAPI total: {len(search_urls)} unique URLs", file=sys.stderr, flush=True)
+            logger.info(f"[SEARCH] SerpAPI total: {len(search_urls)} unique URLs")
+    elif serper_key:
+        organic_urls = _serper_search(queries, results_per_query, delay)
+        news_urls = _serper_news_search(queries, min(results_per_query, 5), delay)
+        logger.info(f"[SEARCH] Serper: organic={len(organic_urls)} news={len(news_urls)}")
+
+        search_urls = []
+        seen_search: set = set()
+        for u in organic_urls + news_urls:
+            if u not in seen_search:
+                seen_search.add(u)
+                search_urls.append(u)
+
+        if not search_urls:
+            logger.warning("[SEARCH] Serper returned 0 results, falling back to Bing")
+            search_urls = _bing_search(queries, results_per_query, delay)
+        else:
+            logger.info(f"[SEARCH] Serper total: {len(search_urls)} unique URLs")
     else:
-        print("[SEARCH] No SERP_API_KEY, using Bing", file=sys.stderr, flush=True)
+        logger.warning("[SEARCH] No SERP_API_KEY or SERPER_API_KEY, using Bing")
         search_urls = _bing_search(queries, results_per_query, delay)
 
     # Merge search results (deduplicated)
@@ -331,9 +347,9 @@ def web_search(queries: list[str],
             all_urls.append(u)
 
     if not all_urls:
-        print("[SEARCH] WARNING: No URLs found from any source!", file=sys.stderr, flush=True)
+        logger.warning("[SEARCH] No URLs found from any source!")
     else:
-        print(f"[SEARCH] Total: {len(all_urls)} URLs ({seed_count} seed + {len(search_urls)} search)", file=sys.stderr, flush=True)
+        logger.info(f"[SEARCH] Total: {len(all_urls)} URLs ({seed_count} seed + {len(search_urls)} search)")
 
     return all_urls
 
@@ -540,6 +556,86 @@ def _serpapi_jobs_search(queries: list[str],
             time.sleep(delay)
 
     logger.info(f"SerpAPI jobs found {len(urls)} unique URLs")
+    return urls
+
+
+def _serper_search(queries: list[str],
+                   results_per_query: int = 10,
+                   delay: float = 1.0) -> list[str]:
+    """Search via Serper.dev Google organic. Requires SERPER_API_KEY env var."""
+    serper_key = os.getenv('SERPER_API_KEY', '')
+    if not serper_key:
+        return []
+
+    urls = []
+    seen = set()
+    for i, query in enumerate(queries):
+        logger.info(f"Serper organic [{i+1}/{len(queries)}]: {query}")
+        try:
+            resp = requests.post(
+                'https://google.serper.dev/search',
+                headers={'X-API-KEY': serper_key, 'Content-Type': 'application/json'},
+                json={'q': query, 'num': results_per_query, 'hl': 'en', 'gl': 'us'},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Serper organic {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('organic', [])[:results_per_query]:
+                url = r.get('link', '')
+                if url and url not in seen and not should_skip_url(url):
+                    seen.add(url)
+                    urls.append(url)
+        except Exception as e:
+            logger.warning(f"Serper organic failed for '{query}': {e}")
+        if i < len(queries) - 1:
+            time.sleep(delay)
+
+    logger.info(f"Serper organic found {len(urls)} unique URLs")
+    return urls
+
+
+def _serper_news_search(queries: list[str],
+                        results_per_query: int = 5,
+                        delay: float = 1.0) -> list[str]:
+    """Search via Serper.dev Google News. Finds recent conference announcements."""
+    serper_key = os.getenv('SERPER_API_KEY', '')
+    if not serper_key:
+        return []
+
+    news_queries = [
+        q for q in queries
+        if any(kw in q.lower() for kw in ['call for', 'conference', 'summit', 'event', 'podcast'])
+    ]
+    if not news_queries:
+        news_queries = queries[:5]
+    news_queries = news_queries[:8]
+
+    urls = []
+    seen = set()
+    for i, query in enumerate(news_queries):
+        logger.info(f"Serper news [{i+1}/{len(news_queries)}]: {query}")
+        try:
+            resp = requests.post(
+                'https://google.serper.dev/news',
+                headers={'X-API-KEY': serper_key, 'Content-Type': 'application/json'},
+                json={'q': query, 'num': results_per_query, 'hl': 'en', 'gl': 'us'},
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Serper news {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('news', [])[:results_per_query]:
+                url = r.get('link', '')
+                if url and url not in seen and not should_skip_url(url):
+                    seen.add(url)
+                    urls.append(url)
+        except Exception as e:
+            logger.warning(f"Serper news failed for '{query}': {e}")
+        if i < len(news_queries) - 1:
+            time.sleep(delay)
+
+    logger.info(f"Serper news found {len(urls)} unique URLs")
     return urls
 
 
