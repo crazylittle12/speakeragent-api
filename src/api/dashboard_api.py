@@ -49,7 +49,7 @@ _api_key_header = APIKeyHeader(name='X-API-Key', auto_error=False)
 
 def verify_api_key(key: Optional[str] = Depends(_api_key_header)):
     """Require a valid X-API-Key header on protected endpoints."""
-    expected = Settings.API_KEY
+    expected = os.getenv('API_KEY', '')  # read at request time — avoids Railway startup ordering issues
     if not expected:
         raise HTTPException(status_code=503, detail="API_KEY not configured")
     if key != expected:
@@ -1182,6 +1182,150 @@ def _rebuild_profile_json(speaker_id: str, fields: dict):
         logger.info(f"Rebuilt profile JSON for {speaker_id}")
     except Exception as e:
         logger.error(f"Failed to rebuild profile JSON for {speaker_id}: {e}")
+
+
+# ── Dashboard pipeline stats ────────────────────────────────
+
+@app.get("/api/dashboard/{speaker_id}/pipeline-stats")
+def pipeline_stats(speaker_id: str, _: None = Depends(verify_api_key)):
+    """Return the four headline stats for the speaker dashboard UI.
+
+    Returns:
+        opportunities_identified: total leads + leads found in last 7 days
+        active_pitches: contacted leads + count awaiting response (not yet replied/booked)
+        response_rate: (Replied+Booked) / outreach_total, plus month-over-month delta
+        revenue_pipeline: min_honorarium × pipeline leads (Contacted+Replied+Booked)
+    """
+    from datetime import datetime, timedelta
+
+    at = get_airtable()
+    all_leads = at.get_leads(speaker_id=speaker_id)
+
+    # Speaker min_honorarium for revenue estimate
+    min_fee = 0
+    speaker = at.get_speaker(speaker_id)
+    if speaker:
+        min_fee = int(speaker.get('fields', {}).get('min_honorarium') or 0)
+
+    today = date.today()
+    week_ago = today - timedelta(days=7)
+    thirty_days_ago = today - timedelta(days=30)
+    sixty_days_ago = today - timedelta(days=60)
+
+    # Bucket counts
+    total = len(all_leads)
+    new_this_week = 0
+    contacted = 0
+    replied = 0
+    booked = 0
+    passed = 0
+
+    # Same buckets but only for the last 30 days (response rate current period)
+    outreach_last30 = 0
+    responded_last30 = 0
+    # Prior 30-day window (day -60 to -30) for delta
+    outreach_prev30 = 0
+    responded_prev30 = 0
+
+    for record in all_leads:
+        f = record.get('fields', {})
+        status = f.get('Lead Status', 'New')
+        date_found_raw = f.get('Date Found', '')
+
+        # Parse Date Found
+        lead_date = None
+        if date_found_raw:
+            try:
+                lead_date = datetime.fromisoformat(date_found_raw.replace('Z', '+00:00')).date()
+            except (ValueError, TypeError):
+                try:
+                    lead_date = datetime.strptime(date_found_raw[:10], '%Y-%m-%d').date()
+                except (ValueError, TypeError):
+                    pass
+
+        if lead_date and lead_date >= week_ago:
+            new_this_week += 1
+
+        if status == 'Contacted':
+            contacted += 1
+        elif status == 'Replied':
+            replied += 1
+        elif status == 'Booked':
+            booked += 1
+        elif status == 'Passed':
+            passed += 1
+
+        # Response rate windows — based on when lead was found
+        if lead_date:
+            if lead_date >= thirty_days_ago:
+                if status in ('Contacted', 'Replied', 'Booked', 'Passed'):
+                    outreach_last30 += 1
+                if status in ('Replied', 'Booked'):
+                    responded_last30 += 1
+            elif lead_date >= sixty_days_ago:
+                if status in ('Contacted', 'Replied', 'Booked', 'Passed'):
+                    outreach_prev30 += 1
+                if status in ('Replied', 'Booked'):
+                    responded_prev30 += 1
+
+    # ── Compute stats ────────────────────────────────────────
+
+    # 1. Opportunities identified
+    opportunities = {
+        "value": total,
+        "change_value": new_this_week,
+        "change_label": f"+{new_this_week} this week",
+        "change_type": "positive" if new_this_week > 0 else "neutral",
+    }
+
+    # 2. Active pitches (Contacted = sent, awaiting reply)
+    awaiting = contacted  # still in Contacted = no reply yet
+    active_pitches = {
+        "value": contacted + replied,
+        "change_value": awaiting,
+        "change_label": f"{awaiting} awaiting response",
+        "change_type": "neutral",
+    }
+
+    # 3. Response rate
+    current_rate = round(responded_last30 / outreach_last30 * 100, 1) if outreach_last30 else 0
+    prev_rate = round(responded_prev30 / outreach_prev30 * 100, 1) if outreach_prev30 else 0
+    rate_delta = round(current_rate - prev_rate, 1)
+    # Fall back to all-time rate if no windowed data
+    if outreach_last30 == 0:
+        all_outreach = contacted + replied + booked + passed
+        current_rate = round((replied + booked) / all_outreach * 100, 1) if all_outreach else 0
+        rate_delta = 0
+    response_rate = {
+        "value": current_rate,
+        "value_formatted": f"{current_rate}%",
+        "change_value": rate_delta,
+        "change_label": (
+            f"+{rate_delta}% vs last month" if rate_delta > 0
+            else f"{rate_delta}% vs last month" if rate_delta < 0
+            else "Same as last month"
+        ),
+        "change_type": "positive" if rate_delta > 0 else "negative" if rate_delta < 0 else "neutral",
+    }
+
+    # 4. Revenue pipeline
+    pipeline_leads = contacted + replied + booked
+    pipeline_value = min_fee * pipeline_leads
+    revenue_pipeline = {
+        "value": pipeline_value,
+        "value_formatted": f"${pipeline_value:,}",
+        "change_value": pipeline_leads,
+        "change_label": f"Based on ${min_fee:,} floor" if min_fee else f"{pipeline_leads} active leads",
+        "change_type": "neutral",
+    }
+
+    return {
+        "speaker_id": speaker_id,
+        "opportunities_identified": opportunities,
+        "active_pitches": active_pitches,
+        "response_rate": response_rate,
+        "revenue_pipeline": revenue_pipeline,
+    }
 
 
 # ── Dashboard (combined) ────────────────────────────────────
