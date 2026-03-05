@@ -792,6 +792,9 @@ def register_speaker(body: SpeakerRegistration):
         'full_name': body.full_name,
         'email': body.email,
         'status': 'active',
+        'Plan': 'Free',
+        'scouts_used': 0,
+        'scouts_reset_date': date.today().isoformat(),
         'created_at': date.today().isoformat(),
     }
     if body.tagline:
@@ -810,6 +813,18 @@ def register_speaker(body: SpeakerRegistration):
         fields['location'] = body.location
     if body.website:
         fields['website'] = body.website
+    if body.credentials:
+        fields['credentials'] = body.credentials
+    if body.linkedin:
+        fields['linkedin'] = body.linkedin
+    if body.speaker_sheet:
+        fields['speaker_sheet'] = body.speaker_sheet
+    if body.notes:
+        fields['notes'] = body.notes
+    if body.conference_year is not None:
+        fields['conference_year'] = body.conference_year
+    if body.conference_tier:
+        fields['conference_tier'] = body.conference_tier
 
     record = at.create_speaker(fields)
     if not record:

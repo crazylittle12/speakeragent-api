@@ -1,0 +1,20 @@
+{
+  "full_name": "Aaron",
+  "credentials": "",
+  "professional_title": "test",
+  "years_experience": 0,
+  "book_title": "",
+  "topics": [
+    {
+      "topic": "test",
+      "description": ""
+    }
+  ],
+  "target_industries": [],
+  "target_geography": "US",
+  "min_honorarium": 5000,
+  "discussion_points": [
+    "test"
+  ],
+  "bio": "test"
+}
