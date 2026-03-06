@@ -1,0 +1,39 @@
+{
+  "full_name": "Aaron Camp",
+  "credentials": "",
+  "professional_title": "Data-Driven",
+  "years_experience": 0,
+  "book_title": "",
+  "topics": [
+    {
+      "topic": "Code Red Leadership: Crisis Decisions Under Pressure",
+      "description": "Drawing from 30+ years of ER decision-making, this session delivers a battlefield-tested framework for making high-stakes leadership calls fast, clearly, and confidently when it matters most.",
+      "audience": "Senior leaders, executives, and managers in high-pressure industries"
+    },
+    {
+      "topic": "Flatline to Frontline: Resurrecting Team Resilience",
+      "description": "Using real ER case studies, this talk shows leaders how to rebuild burned-out, overwhelmed teams and restore peak performance when the pressure never stops.",
+      "audience": "HR leaders, team managers, and organizational development professionals"
+    },
+    {
+      "topic": "Never Lose the Patient: A Customer Experience Survival Guide",
+      "description": "This session translates ER patient-care intensity into customer retention strategies, showing businesses how urgency, empathy, and clarity drive loyalty when stakes are high.",
+      "audience": "Customer service teams, sales leaders, and CX professionals across industries"
+    }
+  ],
+  "target_industries": [],
+  "target_geography": "US",
+  "min_honorarium": 5000,
+  "discussion_points": [
+    "Code Red Leadership: Crisis Decisions Under Pressure",
+    "Flatline to Frontline: Resurrecting Team Resilience",
+    "Never Lose the Patient: A Customer Experience Survival Guide"
+  ],
+  "linkedin": "",
+  "website": "",
+  "speaker_sheet": "",
+  "notes": "",
+  "conference_year": 2026,
+  "conference_tier": "",
+  "bio": "30+ years frontline ER experience. Published author of Never Let Them See You Sweat. Extensive media presence across TV, print, and digital."
+}
