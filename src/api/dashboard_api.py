@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from config.settings import Settings
 from src.api.airtable import AirtableAPI
+from src.api.checklist_api import router as checklist_router
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+app.include_router(checklist_router)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -917,6 +919,12 @@ def register_speaker(body: SpeakerRegistration):
     record = at.create_speaker(fields)
     if not record:
         raise HTTPException(status_code=500, detail="Failed to create speaker")
+
+    # Create onboarding checklist (non-blocking)
+    threading.Thread(
+        target=lambda: get_airtable().create_onboarding_checklist(speaker_id),
+        daemon=True,
+    ).start()
 
     # Upload attachments to Airtable (non-blocking)
     if body.attachments:

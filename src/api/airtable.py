@@ -276,6 +276,100 @@ class AirtableAPI:
             logger.error(f"Failed to create speaker: {e}")
             return None
 
+    def get_onboarding_checklist(self, speaker_id: str) -> list:
+        """Fetch all checklist rows for a speaker from Onboarding_Checklist."""
+        table = 'Onboarding_Checklist'
+        params = {
+            'filterByFormula': f"{{speaker_id}} = '{speaker_id}'",
+            'sort[0][field]': 'Order',
+            'sort[0][direction]': 'asc',
+        }
+        try:
+            resp = requests.get(
+                f'{self.base_url}/{table}',
+                headers=self.headers,
+                params=params,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            records = resp.json().get('records', [])
+            return [
+                {
+                    'id': r['id'],
+                    'task': r['fields'].get('Task', ''),
+                    'status': r['fields'].get('Status', 'Incomplete'),
+                    'order': r['fields'].get('Order'),
+                }
+                for r in records
+            ]
+        except Exception as e:
+            logger.error(f"[CHECKLIST] Failed to fetch checklist for {speaker_id}: {e}")
+            return []
+
+    def complete_checklist_task(self, speaker_id: str, task: str) -> bool:
+        """Set a checklist task to Complete for a speaker."""
+        table = 'Onboarding_Checklist'
+        params = {
+            'filterByFormula': f"AND({{speaker_id}} = '{speaker_id}', {{Task}} = '{task}')",
+            'pageSize': 1,
+        }
+        try:
+            resp = requests.get(
+                f'{self.base_url}/{table}',
+                headers=self.headers,
+                params=params,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            records = resp.json().get('records', [])
+            if not records:
+                logger.warning(f"[CHECKLIST] Task '{task}' not found for {speaker_id}")
+                return False
+            record_id = records[0]['id']
+            patch = requests.patch(
+                f'{self.base_url}/{table}/{record_id}',
+                headers=self.headers,
+                json={'fields': {'Status': 'Completed'}},
+                timeout=10,
+            )
+            if not patch.ok:
+                logger.error(f"[CHECKLIST] Failed to complete task '{task}' for {speaker_id}: {patch.status_code} {patch.text[:300]}")
+                return False
+            logger.info(f"[CHECKLIST] Task '{task}' marked Complete for {speaker_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[CHECKLIST] Exception completing task '{task}' for {speaker_id}: {e}")
+            return False
+
+    def create_onboarding_checklist(self, speaker_id: str) -> bool:
+        """Insert onboarding checklist rows for a newly registered speaker."""
+        tasks = [
+            'Update Persona',
+            'Run Scout',
+            'Review Leads',
+            'Approve Lead',
+        ]
+        table = 'Onboarding_Checklist'
+        records = [
+            {'fields': {'speaker_id': speaker_id, 'Task': task, 'Status': 'Incomplete', 'Order': idx+1}}
+            for idx, task in enumerate(tasks)
+        ]
+        try:
+            resp = requests.post(
+                f'{self.base_url}/{table}',
+                headers=self.headers,
+                json={'records': records},
+                timeout=10,
+            )
+            if not resp.ok:
+                logger.error(f"[CHECKLIST] Failed to create checklist for {speaker_id}: {resp.status_code} {resp.text[:300]}")
+                return False
+            logger.info(f"[CHECKLIST] Created {len(tasks)} checklist items for {speaker_id}")
+            return True
+        except Exception as e:
+            logger.error(f"[CHECKLIST] Exception creating checklist for {speaker_id}: {e}")
+            return False
+
     def get_speaker_by_email(self, email: str) -> Optional[dict]:
         """Fetch a speaker record by email address."""
         params = {
