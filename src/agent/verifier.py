@@ -101,6 +101,7 @@ def verify_lead(
     scraped: dict,
     profile: dict,
     api_key: str,
+    event_type: str = 'Conference',
 ) -> dict:
     """Run verification checks on a scored lead.
 
@@ -121,6 +122,8 @@ def verify_lead(
 
     # ── Fast deterministic pre-checks ──────────────────────
 
+    is_podcast = event_type == 'Podcast'
+
     # 1. Reject very low scores
     score = lead_data.get("Match Score", 0)
     if score < 20:
@@ -131,8 +134,8 @@ def verify_lead(
             "flags": ["low_score"],
         }
 
-    # 2. Reject past events
-    if _is_past_event(scraped):
+    # 2. Reject past events (skip for podcasts — no event date)
+    if not is_podcast and _is_past_event(scraped):
         _log(f"[VERIFIER] REJECTED: Past event")
         return {
             "status": "Rejected",
@@ -140,17 +143,18 @@ def verify_lead(
             "flags": ["past_event"],
         }
 
-    # 3. Hard geographic mismatch
+    # 3. Hard geographic mismatch (skip for podcasts — recorded remotely)
     target_geo = profile.get("target_geography", "")
     location = scraped.get("location", "") or lead_data.get("Event Location", "")
-    geo_rejection = _geo_hard_reject(location, target_geo)
-    if geo_rejection:
-        _log(f"[VERIFIER] REJECTED: {geo_rejection}")
-        return {
-            "status": "Rejected",
-            "notes": geo_rejection,
-            "flags": ["geographic_mismatch"],
-        }
+    if not is_podcast:
+        geo_rejection = _geo_hard_reject(location, target_geo)
+        if geo_rejection:
+            _log(f"[VERIFIER] REJECTED: {geo_rejection}")
+            return {
+                "status": "Rejected",
+                "notes": geo_rejection,
+                "flags": ["geographic_mismatch"],
+            }
 
     # ── Claude Haiku verification ──────────────────────────
 
@@ -158,7 +162,41 @@ def verify_lead(
         conf_name = lead_data.get("Conference Name", "Unknown")
         page_text = scraped.get("full_text", "")[:1000]
 
-        prompt = f"""You are a quality-control agent for a speaker booking platform.
+        if is_podcast:
+            prompt = f"""You are a quality-control agent for a speaker booking platform.
+Check this podcast lead for quality. Be strict but fair.
+
+SPEAKER PROFILE:
+- Target Industries: {', '.join(profile.get('target_industries', []))}
+- Topics: {json.dumps([t.get('topic', '') for t in profile.get('topics', [])], indent=0)}
+
+PODCAST TO VERIFY:
+- Show: {conf_name}
+- URL: {scraped.get('url', '')}
+- Match Score: {score}
+- Has Guest Form/Email: {bool(scraped.get('guest_form_url') or scraped.get('emails'))}
+
+PAGE EXCERPT:
+{page_text}
+
+Check these 3 things:
+1. INDUSTRY_RELEVANCE: Does this podcast's content match the speaker's topics or target industries?
+2. CONTENT_QUALITY: Is this actually a podcast show page (not a blog post, directory listing, or unrelated page)?
+3. BOOKING_ACCESS: Is there any way to pitch as a guest (form, email, contact page)?
+
+Return ONLY valid JSON:
+{{
+  "industry_ok": true/false,
+  "industry_note": "brief explanation",
+  "content_ok": true/false,
+  "content_note": "brief explanation",
+  "booking_ok": true/false,
+  "booking_note": "brief explanation",
+  "overall": "Approved" or "Flagged" or "Rejected",
+  "summary": "one-sentence summary of verdict"
+}}"""
+        else:
+            prompt = f"""You are a quality-control agent for a speaker booking platform.
 Check this lead for quality issues. Be strict but fair.
 
 SPEAKER PREFERENCES:
@@ -211,14 +249,16 @@ Return ONLY valid JSON:
         result = json.loads(raw)
 
         # Collect flags
-        if not result.get("geographic_ok", True):
+        if not is_podcast and not result.get("geographic_ok", True):
             flags.append("geographic_mismatch")
         if not result.get("industry_ok", True):
             flags.append("industry_mismatch")
         if not result.get("content_ok", True):
             flags.append("content_quality")
-        if not result.get("date_ok", True):
+        if not is_podcast and not result.get("date_ok", True):
             flags.append("date_issue")
+        if is_podcast and not result.get("booking_ok", True):
+            flags.append("no_booking_access")
 
         status = result.get("overall", "Approved")
         # Normalize status

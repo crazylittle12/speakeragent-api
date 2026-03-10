@@ -143,7 +143,7 @@ class AirtableAPI:
             return None
 
     def get_leads(self, speaker_id: str = '',
-                  status: str = '', triage: str = '') -> list:
+                  status: str = '', triage: str = '', lead_type: str = '') -> list:
         """Fetch leads with optional filters."""
         filters = []
         if speaker_id:
@@ -152,6 +152,8 @@ class AirtableAPI:
             filters.append(f"{{Lead Status}} = '{status}'")
         if triage:
             filters.append(f"{{Lead Triage}} = '{triage}'")
+        if lead_type:
+            filters.append(f"{{Type}} = '{lead_type}'")
 
         params = {}
         if filters:

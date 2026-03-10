@@ -111,7 +111,7 @@ def run_scout(
 
     def _search_group(args: tuple) -> tuple[str, list[str]]:
         et, tq, sp = args
-        return et, web_search(tq, results_per_query=8, delay=1.5, seed_urls_path=sp)
+        return et, web_search(tq, results_per_query=20, delay=1.5, seed_urls_path=sp)
 
     with ThreadPoolExecutor(max_workers=len(search_args) or 1) as search_ex:
         for et, urls in search_ex.map(_search_group, search_args):
@@ -174,6 +174,7 @@ def run_scout(
             profile=profile,
             api_key=settings.CLAUDE_API_KEY,
             model=settings.CLAUDE_MODEL,
+            event_type=event_type,
         )
         if not score_result:
             result['skipped_score_fail'] = 1
@@ -192,6 +193,7 @@ def run_scout(
             scraped=scraped,
             profile=profile,
             api_key=settings.CLAUDE_API_KEY,
+            event_type=event_type,
         )
         _log(f"[SCOUT] [{idx}] Verification: {verification['status']} — {verification.get('notes', '')}")
 
@@ -238,6 +240,8 @@ def run_scout(
             lead_payload['Contact Email'] = scraped['emails'][0]
         if scraped.get('linkedin_links'):
             lead_payload['Contact LinkedIn'] = scraped['linkedin_links'][0]
+        if scraped.get('guest_form_url'):
+            lead_payload['Guest Form URL'] = scraped['guest_form_url']
         event_date_iso = _parse_date_to_iso(scraped.get('event_date_raw', ''))
         if event_date_iso:
             lead_payload['Event Date'] = event_date_iso

@@ -224,12 +224,18 @@ def _run_scout_for_speaker(speaker_id: str, profile_path: str):
             return {'skipped': 'quota_exhausted'}
         record, _, scouts_used, max_leads_per_run = plan
 
+        at = get_airtable()
+        at.update_speaker(record['id'], {'scout_status': 'Running'})
         logger.info(f"[SCOUT] Starting scout for {speaker_id} with profile {profile_path}")
-        summary = run_scout(
-            profile_path=profile_path,
-            speaker_id=speaker_id,
-            max_leads=max_leads_per_run,
-        )
+        try:
+            summary = run_scout(
+                profile_path=profile_path,
+                speaker_id=speaker_id,
+                max_leads=max_leads_per_run,
+            )
+        finally:
+            at.update_speaker(record['id'], {'scout_status': 'Completed'})
+
         logger.info(
             f"[SCOUT] Complete for {speaker_id}: "
             f"urls={summary.get('total_urls', 0)} "
@@ -242,7 +248,6 @@ def _run_scout_for_speaker(speaker_id: str, profile_path: str):
         )
 
         # Increment scouts_used in Airtable
-        at = get_airtable()
         new_count = scouts_used + 1
         update_result = at.update_speaker(record['id'], {'scouts_used': new_count})
         if update_result:
@@ -642,6 +647,17 @@ def trigger_scout(speaker_id: Optional[str] = Query(None), _: None = Depends(ver
         thread = threading.Thread(target=_run_daily_scout, daemon=True)
         thread.start()
         return {"status": "started", "message": "Scout running for all active speakers"}
+
+
+@app.get("/api/scout/status/{speaker_id}")
+def get_scout_status(speaker_id: str, _: None = Depends(verify_api_key)):
+    """Return the current scout_status for a speaker."""
+    at = get_airtable()
+    speaker = at.get_speaker(speaker_id)
+    if not speaker:
+        raise HTTPException(status_code=404, detail="Speaker not found")
+    status = speaker.get("fields", {}).get("scout_status", None)
+    return {"speaker_id": speaker_id, "scout_status": status}
 
 
 # ── Email ──────────────────────────────────────────────────
@@ -1607,14 +1623,19 @@ def pipeline_stats(speaker_id: str, _: None = Depends(verify_api_key)):
 # ── Dashboard (combined) ────────────────────────────────────
 
 @app.get("/api/dashboard/{speaker_id}")
-def dashboard(speaker_id: str, status: Optional[str] = Query(None), _: None = Depends(verify_api_key)):
+def dashboard(
+    speaker_id: str,
+    status: Optional[str] = Query(None),
+    type: Optional[str] = Query(None, description="Filter by lead type: Conference, Podcast, Corporate Events, Local Events, Other"),
+    _: None = Depends(verify_api_key),
+):
     """Combined dashboard data: profile + stats + top leads."""
     at = get_airtable()
 
     # Stats
     stats = at.get_lead_stats(speaker_id)
 
-    all_leads = at.get_leads(speaker_id=speaker_id, status=status or '')
+    all_leads = at.get_leads(speaker_id=speaker_id, status=status or '', lead_type=type or '')
     sorted_leads = sorted(
         all_leads,
         key=lambda r: r.get('fields', {}).get('Match Score', 0),

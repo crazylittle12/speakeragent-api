@@ -23,6 +23,7 @@ PAY_RANGES = {
     'university': '$1,500 - $5,000',
     'nonprofit': '$500 - $2,000',
     'unknown': '$1,000 - $5,000',
+    'podcast': '$0 - $500 (exposure)',
 }
 
 
@@ -50,7 +51,8 @@ def score_lead_with_claude(
     scraped: dict,
     profile: dict,
     api_key: str,
-    model: str = 'claude-sonnet-4-20250514'
+    model: str = 'claude-sonnet-4-20250514',
+    event_type: str = 'Conference',
 ) -> Optional[dict]:
     """Use Claude to intelligently score a lead.
 
@@ -61,8 +63,11 @@ def score_lead_with_claude(
         best_topic_confidence (float 0-1),
         org_type (str),
         pay_estimate (str),
-        scores_breakdown (dict of 6 criteria)
+        scores_breakdown (dict of criteria)
     """
+    if event_type == 'Podcast':
+        return _score_podcast_with_claude(scraped, profile, api_key, model)
+
     topics_str = json.dumps(profile.get('topics', []), indent=2)
     page_text = scraped.get('full_text', '')[:1500]
     conf_title = scraped.get('title', 'Unknown Conference')
@@ -173,6 +178,104 @@ Return ONLY valid JSON (no markdown, no explanation):
         return _fallback_score(scraped, profile)
     except Exception as e:
         logger.error(f"Claude scoring failed: {e}")
+        return _fallback_score(scraped, profile)
+
+
+def _score_podcast_with_claude(
+    scraped: dict,
+    profile: dict,
+    api_key: str,
+    model: str,
+) -> Optional[dict]:
+    """Podcast-specific scoring: topic fit, audience, show activity, booking access."""
+    topics_str = json.dumps(profile.get('topics', []), indent=2)
+    page_text = scraped.get('full_text', '')[:1500]
+    show_title = scraped.get('title', 'Unknown Podcast')
+    has_guest_form = bool(scraped.get('guest_form_url') or scraped.get('emails'))
+
+    prompt = f"""You are an expert at matching professional speakers to podcast guest opportunities.
+
+SPEAKER PROFILE:
+- Name: {profile.get('full_name')}
+- Credentials: {profile.get('credentials')}
+- Title: {profile.get('professional_title')}
+- Target Industries: {', '.join(profile.get('target_industries', []))}
+
+SPEAKER TOPICS:
+{topics_str}
+
+PODCAST TO EVALUATE:
+Title: {show_title}
+URL: {scraped.get('url', '')}
+Description: {scraped.get('description', '')}
+Has Guest Form or Email: {has_guest_form}
+
+PAGE CONTENT (excerpt):
+{page_text}
+
+EVALUATE this podcast on 4 criteria, each scored 0-10:
+
+1. TOPIC_RELEVANCE (weight 35%): How well does this podcast's subject matter match one of the speaker's topics? 10 = exact match (same field/audience), 0 = completely unrelated.
+2. AUDIENCE_FIT (weight 25%): Does the podcast audience match the speaker's target industries and audience? 10 = perfect fit, 5 = adjacent, 0 = wrong audience entirely.
+3. SHOW_ACTIVITY (weight 20%): Is this an active, established show? 10 = clear evidence of recent episodes/active show, 5 = some evidence, 0 = appears inactive or no evidence.
+4. BOOKING_ACCESS (weight 20%): How accessible is the guest booking process? 10 = has guest form/email/clear pitch process, 5 = contact info findable, 0 = no way to reach them.
+
+Also determine:
+- BEST_TOPIC: Which speaker topic is the best fit? Return the EXACT topic title.
+- BEST_TOPIC_CONFIDENCE: 0.0 to 1.0
+
+Return ONLY valid JSON (no markdown, no explanation):
+{{
+  "topic_relevance": <0-10>,
+  "audience_fit": <0-10>,
+  "show_activity": <0-10>,
+  "booking_access": <0-10>,
+  "best_topic": "<exact topic title>",
+  "best_topic_confidence": <0.0-1.0>
+}}"""
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=model,
+            max_tokens=200,
+            messages=[{'role': 'user', 'content': prompt}]
+        )
+        raw = response.content[0].text.strip()
+        if raw.startswith('```'):
+            raw = raw.split('\n', 1)[1]
+            raw = raw.rsplit('```', 1)[0]
+        scores = json.loads(raw)
+
+        topic = scores.get('topic_relevance', 0)
+        audience = scores.get('audience_fit', 0)
+        activity = scores.get('show_activity', 0)
+        booking = scores.get('booking_access', 0)
+
+        match_score = round(
+            (topic * 0.35 + audience * 0.25 + activity * 0.20 + booking * 0.20) * 10
+        )
+        match_score = max(0, min(100, match_score))
+
+        return {
+            'match_score': match_score,
+            'triage': classify_triage(match_score),
+            'best_topic': scores.get('best_topic', ''),
+            'best_topic_confidence': scores.get('best_topic_confidence', 0),
+            'org_type': 'podcast',
+            'pay_estimate': PAY_RANGES['podcast'],
+            'scores_breakdown': {
+                'topic_relevance': topic,
+                'audience_fit': audience,
+                'show_activity': activity,
+                'booking_access': booking,
+            }
+        }
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse podcast scoring response: {e}\nRaw: {raw}")
+        return _fallback_score(scraped, profile)
+    except Exception as e:
+        logger.error(f"Podcast scoring failed: {e}")
         return _fallback_score(scraped, profile)
 
 

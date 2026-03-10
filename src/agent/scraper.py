@@ -16,12 +16,17 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# Domains to skip (job boards, PDFs, irrelevant)
+# Domains to skip (job boards, PDFs, irrelevant, podcast streaming players)
 SKIP_DOMAINS = {
     'linkedin.com', 'facebook.com', 'twitter.com', 'x.com',
     'instagram.com', 'youtube.com', 'indeed.com', 'glassdoor.com',
     'ziprecruiter.com', 'monster.com', 'reddit.com', 'pinterest.com',
     'tiktok.com', 'amazon.com', 'ebay.com',
+    # Podcast streaming/player platforms — no guest application pages
+    'deezer.com', 'spotify.com', 'podcasts.apple.com', 'music.apple.com',
+    'stitcher.com', 'iheart.com', 'iheartradio.com', 'tunein.com',
+    'podcastaddict.com', 'castbox.fm', 'overcast.fm', 'pocketcasts.com',
+    'anchor.fm', 'audible.com', 'pandora.com', 'soundcloud.com',
 }
 
 SKIP_EXTENSIONS = {'.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx'}
@@ -37,6 +42,26 @@ LOCATION_RE = re.compile(
     r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),\s*'
     r'([A-Z]{2}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)*)'
 )
+
+
+# Podcast hosting platforms where the subdomain IS the show — normalize to root
+PODCAST_HOSTS = {'libsyn.com', 'podbean.com', 'buzzsprout.com', 'simplecast.com', 'captivate.fm'}
+
+# Path patterns that indicate episode archive/pagination pages (low-value for guest pitching)
+_EPISODE_ARCHIVE_RE = re.compile(
+    r'/(?:podcast|episodes?|feed|rss)(?:/(?:page/\d+.*|size/\d+.*))?$', re.IGNORECASE
+)
+
+
+def normalize_url(url: str) -> str:
+    """Normalize a URL — strip episode archive pagination on podcast hosts."""
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower().replace('www.', '')
+    # For podcast hosting subdomains, redirect to show root
+    for host in PODCAST_HOSTS:
+        if domain.endswith('.' + host) and _EPISODE_ARCHIVE_RE.search(parsed.path):
+            return f"{parsed.scheme}://{parsed.netloc}/"
+    return url
 
 
 def should_skip_url(url: str) -> bool:
@@ -150,6 +175,16 @@ def scrape_page(url: str, timeout: int = 10) -> Optional[dict]:
                 linkedin_links.append(href)
         linkedin_links = list(set(linkedin_links))
 
+        # Guest pitch / booking form URL (podcasts)
+        guest_form_url = ''
+        form_keywords = ['pitch', 'be-a-guest', 'be_a_guest', 'guest-form',
+                         'guest_form', 'guest-application', 'typeform', 'calendly']
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href'].lower()
+            if any(kw in href for kw in form_keywords):
+                guest_form_url = a_tag['href']
+                break
+
         # Call for speakers signal
         cfp_keywords = [
             'call for speakers', 'call for proposals', 'submit a talk',
@@ -184,6 +219,7 @@ def scrape_page(url: str, timeout: int = 10) -> Optional[dict]:
             'has_cfp': has_cfp,
             'mentions_payment': mentions_payment,
             'mentions_no_payment': mentions_no_payment,
+            'guest_form_url': guest_form_url,
             'full_text': full_text_trimmed,
         }
     except Exception as e:
@@ -296,13 +332,21 @@ def generate_search_queries(profile: dict) -> list[tuple[str, str]]:
         queries.append((f'"{book_title}" author speaker conference', 'Conference'))
         queries.append((f'author speaker "{book_title}" interview podcast', 'Podcast'))
 
-    # 6. Podcasts
-    for i in range(min(3, len(keywords))):
-        kw = keywords[i]
+    # 6. Podcasts — ~20 queries across multiple strategies
+    for kw in keywords[:3]:
         queries.append((f'{kw} podcast "looking for guests"', 'Podcast'))
-    for i in range(min(2, len(keywords))):
-        kw = keywords[i]
-        queries.append((f'top {kw} podcasts interview guest expert', 'Podcast'))
+        queries.append((f'{kw} podcast "be a guest"', 'Podcast'))
+        queries.append((f'{kw} podcast "submit a pitch" OR "apply to be a guest"', 'Podcast'))
+        queries.append((f'podcast "{kw}" guest expert interview 2025 OR 2026', 'Podcast'))
+        queries.append((f'best {kw} podcasts guest speaker', 'Podcast'))
+    for ind in industries[:2]:
+        queries.append((f'{ind} podcast guest speaker expert', 'Podcast'))
+        queries.append((f'"{ind}" podcast "call for guests" OR "pitch us"', 'Podcast'))
+    queries.append((f'{primary_title} podcast interview guest', 'Podcast'))
+    if credentials:
+        queries.append((f'{credentials} podcast guest speaker', 'Podcast'))
+    if book_title:
+        queries.append((f'"{book_title}" podcast interview author', 'Podcast'))
 
     # 7. Corporate / associations
     for i in range(min(3, len(keywords))):
@@ -346,8 +390,10 @@ def web_search(queries: list[str],
 
     ALWAYS includes seed URLs to guarantee a minimum set of results.
     Search backends (in priority order):
-    1. SerpAPI (Google Search) — requires SERP_API_KEY
-    2. Bing scraping — fallback when no API keys
+    1. Tavily AI Search — requires TAVILY_API_KEY
+    2. SerpAPI (Google Search) — requires SERP_API_KEY
+    3. Serper (Google Search) — requires SERPER_API_KEY
+    4. Bing scraping — fallback when no API keys
     """
     all_urls = []
     seen = set()
@@ -365,10 +411,20 @@ def web_search(queries: list[str],
     else:
         logger.warning("[SEARCH] No seed_urls_path provided")
 
-    # Try SerpAPI first (all engines), then Serper, fall back to Bing
+    # Try Tavily first, then SerpAPI, then Serper, fall back to Bing
+    tavily_key = os.getenv('TAVILY_API_KEY', '')
     serp_key = os.getenv('SERP_API_KEY', '')
     serper_key = os.getenv('SERPER_API_KEY', '')
-    if serp_key:
+    if tavily_key:
+        logger.info("[SEARCH] Using Tavily AI Search")
+        search_urls = _tavily_search(queries, results_per_query, delay)
+        if not search_urls:
+            logger.warning("[SEARCH] Tavily returned 0 results, falling back to Bing")
+            search_urls = _bing_search(queries, results_per_query, delay)
+        else:
+            logger.info(f"[SEARCH] Tavily total: {len(search_urls)} unique URLs")
+    elif serp_key:
+        logger.info("[SEARCH] Using SerpAPI")
         organic_urls = _serpapi_search(queries, results_per_query, delay)
         events_urls = _serpapi_events_search(queries, delay)
         news_urls = _serpapi_news_search(queries, min(results_per_query, 5), delay)
@@ -390,6 +446,7 @@ def web_search(queries: list[str],
         else:
             logger.info(f"[SEARCH] SerpAPI total: {len(search_urls)} unique URLs")
     elif serper_key:
+        logger.info("[SEARCH] Using Serper")
         organic_urls = _serper_search(queries, results_per_query, delay)
         news_urls = _serper_news_search(queries, min(results_per_query, 5), delay)
         logger.info(f"[SEARCH] Serper: organic={len(organic_urls)} news={len(news_urls)}")
@@ -410,8 +467,9 @@ def web_search(queries: list[str],
         logger.warning("[SEARCH] No SERP_API_KEY or SERPER_API_KEY, using Bing")
         search_urls = _bing_search(queries, results_per_query, delay)
 
-    # Merge search results (deduplicated)
+    # Merge search results (deduplicated, normalized)
     for u in search_urls:
+        u = normalize_url(u)
         if u not in seen:
             seen.add(u)
             all_urls.append(u)
@@ -441,6 +499,47 @@ def _load_seed_urls(path: str) -> list[str]:
     except Exception as e:
         logger.error(f"Failed to load seed URLs: {e}")
         return []
+
+
+def _tavily_search(queries: list[str],
+                   results_per_query: int = 10,
+                   delay: float = 1.0) -> list[str]:
+    """Search via Tavily AI search API. Requires TAVILY_API_KEY env var."""
+    tavily_key = os.getenv('TAVILY_API_KEY', '')
+    if not tavily_key:
+        return []
+
+    urls = []
+    seen = set()
+    for i, query in enumerate(queries):
+        logger.info(f"Tavily [{i+1}/{len(queries)}]: {query}")
+        try:
+            resp = requests.post(
+                'https://api.tavily.com/search',
+                json={
+                    'api_key': tavily_key,
+                    'query': query,
+                    'max_results': results_per_query,
+                    'search_depth': 'basic',
+                    'days': 365,
+                },
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Tavily {resp.status_code} for: {query}")
+                continue
+            for r in resp.json().get('results', [])[:results_per_query]:
+                url = r.get('url', '')
+                if url and url not in seen and not should_skip_url(url):
+                    seen.add(url)
+                    urls.append(url)
+        except Exception as e:
+            logger.warning(f"Tavily failed for '{query}': {e}")
+        if i < len(queries) - 1:
+            time.sleep(delay)
+
+    logger.info(f"Tavily found {len(urls)} unique URLs")
+    return urls
 
 
 def _serpapi_search(queries: list[str],
