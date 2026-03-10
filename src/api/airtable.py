@@ -390,6 +390,22 @@ class AirtableAPI:
             logger.error(f"Failed to fetch speaker by email {email}: {e}")
             return None
 
+    def list_speakers_by_email(self, email: str) -> list:
+        """Return all speaker records for a given email address."""
+        params = {'filterByFormula': f"{{email}} = '{email}'"}
+        try:
+            resp = requests.get(
+                f'{self.base_url}/{self.speakers_table}',
+                headers=self.headers,
+                params=params,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json().get('records', [])
+        except Exception as e:
+            logger.error(f"Failed to list speakers by email {email}: {e}")
+            return []
+
     def speaker_exists(self, speaker_id: str) -> bool:
         """Check if a speaker_id is already taken."""
         return self.get_speaker(speaker_id) is not None

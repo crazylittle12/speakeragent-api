@@ -191,8 +191,12 @@ def scrape_page(url: str, timeout: int = 10) -> Optional[dict]:
         return None
 
 
-def generate_search_queries(profile: dict) -> list[str]:
-    """Generate search queries for conferences, podcasts, corporate events, and local gigs."""
+def generate_search_queries(profile: dict) -> list[tuple[str, str]]:
+    """Generate search queries for conferences, podcasts, corporate events, and local gigs.
+
+    Returns a list of (query, event_type) tuples.
+    Event types: Conference, Podcast, Corporate Events, Local Events, Other
+    """
     import datetime as _dt
     import re as _re
 
@@ -265,73 +269,73 @@ def generate_search_queries(profile: dict) -> list[str]:
         kw = keywords[i]
         ind = industries[i % len(industries)]
         scope = f' {tier_scope}' if tier_scope else ''
-        queries.append(f'{kw} {ind}{scope} "call for speakers" conference {year}')
+        queries.append((f'{kw} {ind}{scope} "call for speakers" conference {year}', 'Conference'))
 
     # 2. Conferences — call for proposals / abstracts
     for i in range(min(3, len(keywords))):
         kw = keywords[i]
         ind = industries[i % len(industries)]
-        queries.append(f'{kw} {ind} "call for proposals" {year}')
+        queries.append((f'{kw} {ind} "call for proposals" {year}', 'Conference'))
 
     # 3. Keynote angle
     for i in range(min(3, len(keywords))):
         kw = keywords[i]
         ind = industries[i % len(industries)]
-        queries.append(f'{kw} "keynote speaker" {ind} {year}')
+        queries.append((f'{kw} "keynote speaker" {ind} {year}', 'Conference'))
 
     # 4. Title / credential angle — targets conferences that search by expertise
     if title:
         primary_title = title.split(',')[0].strip()
-        queries.append(f'"{primary_title}" "call for speakers" {year}')
-        queries.append(f'{primary_title} conference speaker {year}')
+        queries.append((f'"{primary_title}" "call for speakers" {year}', 'Conference'))
+        queries.append((f'{primary_title} conference speaker {year}', 'Conference'))
     if credentials:
-        queries.append(f'{credentials} conference "call for speakers" {year}')
+        queries.append((f'{credentials} conference "call for speakers" {year}', 'Conference'))
 
     # 5. Book / author angle
     if book_title:
-        queries.append(f'"{book_title}" author speaker conference')
-        queries.append(f'author speaker "{book_title}" interview podcast')
+        queries.append((f'"{book_title}" author speaker conference', 'Conference'))
+        queries.append((f'author speaker "{book_title}" interview podcast', 'Podcast'))
 
     # 6. Podcasts
     for i in range(min(3, len(keywords))):
         kw = keywords[i]
-        queries.append(f'{kw} podcast "looking for guests"')
+        queries.append((f'{kw} podcast "looking for guests"', 'Podcast'))
     for i in range(min(2, len(keywords))):
         kw = keywords[i]
-        queries.append(f'top {kw} podcasts interview guest expert')
+        queries.append((f'top {kw} podcasts interview guest expert', 'Podcast'))
 
     # 7. Corporate / associations
     for i in range(min(3, len(keywords))):
         kw = keywords[i]
         ind = industries[i % len(industries)]
-        queries.append(f'{ind} association annual meeting "call for presenters" {kw}')
-        queries.append(f'{kw} corporate event speaker {ind}')
+        queries.append((f'{ind} association annual meeting "call for presenters" {kw}', 'Corporate Events'))
+        queries.append((f'{kw} corporate event speaker {ind}', 'Corporate Events'))
 
     # 8. Geo-targeted (only if not national-only tier)
     if conference_tier not in ('national', 'large'):
         for i in range(min(2, len(keywords))):
             kw = keywords[i]
-            queries.append(f'{kw} speaker {geo} event {year}')
-            queries.append(f'{kw} meetup {geo} "looking for speakers"')
+            queries.append((f'{kw} speaker {geo} event {year}', 'Local Events'))
+            queries.append((f'{kw} meetup {geo} "looking for speakers"', 'Local Events'))
         if zip_code:
             for i in range(min(2, len(keywords))):
                 kw = keywords[i]
-                queries.append(f'{kw} speaker near {zip_code} event {year}')
-                queries.append(f'{kw} conference near {zip_code} "call for speakers"')
+                queries.append((f'{kw} speaker near {zip_code} event {year}', 'Local Events'))
+                queries.append((f'{kw} conference near {zip_code} "call for speakers"', 'Local Events'))
 
     # 9. Speaker name — reputation / inbound signal
     if name:
-        queries.append(f'"{name}" speaker conference {year}')
+        queries.append((f'"{name}" speaker conference {year}', 'Conference'))
 
-    # Deduplicate preserving order
+    # Deduplicate by query string, preserving order (first type wins)
     seen: set = set()
     deduped = []
-    for q in queries:
+    for q, t in queries:
         if q not in seen:
             seen.add(q)
-            deduped.append(q)
+            deduped.append((q, t))
 
-    return deduped[:25]
+    return deduped[:50]
 
 
 def web_search(queries: list[str],
@@ -629,9 +633,14 @@ def _serper_search(queries: list[str],
                    results_per_query: int = 10,
                    delay: float = 1.0) -> list[str]:
     """Search via Serper.dev Google organic. Requires SERPER_API_KEY env var."""
+    import datetime as _dt
     serper_key = os.getenv('SERPER_API_KEY', '')
     if not serper_key:
         return []
+
+    # Filter to pages published in the last 2 months — catches recently announced future events
+    months_ago = _dt.date.today() - _dt.timedelta(days=60)
+    tbs_filter = f'cdr:1,cd_min:{months_ago.month}/{months_ago.day}/{months_ago.year}'
 
     urls = []
     seen = set()
@@ -641,7 +650,7 @@ def _serper_search(queries: list[str],
             resp = requests.post(
                 'https://google.serper.dev/search',
                 headers={'X-API-KEY': serper_key, 'Content-Type': 'application/json'},
-                json={'q': query, 'num': results_per_query, 'hl': 'en', 'gl': 'us'},
+                json={'q': query, 'num': results_per_query, 'hl': 'en', 'gl': 'us', 'tbs': tbs_filter, 'sort': 'date'},
                 timeout=10,
             )
             if resp.status_code != 200:
@@ -685,7 +694,7 @@ def _serper_news_search(queries: list[str],
             resp = requests.post(
                 'https://google.serper.dev/news',
                 headers={'X-API-KEY': serper_key, 'Content-Type': 'application/json'},
-                json={'q': query, 'num': results_per_query, 'hl': 'en', 'gl': 'us'},
+                json={'q': query, 'num': results_per_query, 'hl': 'en', 'gl': 'us', 'tbs': 'qdr:y', 'sort': 'date'},
                 timeout=10,
             )
             if resp.status_code != 200:

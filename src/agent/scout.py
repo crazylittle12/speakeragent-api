@@ -5,6 +5,9 @@ Ties together search → scrape → score → pitch → push.
 
 import json
 import logging
+import threading
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -82,53 +85,90 @@ def run_scout(
         'leads': [],
     }
 
-    # Step 1: Generate search queries
-    queries = generate_search_queries(profile)
-    _log(f"[SCOUT] Generated {len(queries)} search queries")
-    for i, q in enumerate(queries):
-        _log(f"  Q{i+1}: {q}")
+    # Step 1: Generate search queries (typed)
+    typed_queries = generate_search_queries(profile)
+    _log(f"[SCOUT] Generated {len(typed_queries)} search queries")
+    for i, (q, t) in enumerate(typed_queries):
+        _log(f"  Q{i+1} [{t}]: {q}")
 
-    # Step 2: Search for conference URLs
+    # Step 2: Search for URLs, grouped by event type (first match wins per URL)
     seed_path = str(Path(profile_path).parent.parent / 'seed_urls.json')
     _log(f"[SCOUT] Seed URL path: {seed_path} (exists={Path(seed_path).exists()})")
-    urls = web_search(queries, results_per_query=5, delay=1.5, seed_urls_path=seed_path)
-    summary['total_urls'] = len(urls)
-    _log(f"[SCOUT] Found {len(urls)} unique URLs to process")
 
-    if not urls:
+    query_groups: dict[str, list[str]] = defaultdict(list)
+    for query, event_type in typed_queries:
+        query_groups[event_type].append(query)
+
+    # Search all type groups in parallel (first-match-wins per URL)
+    url_type_map: dict[str, str] = {}
+    url_type_lock = threading.Lock()
+
+    search_args = []
+    first = True
+    for et, tq in query_groups.items():
+        search_args.append((et, tq, seed_path if first else ''))
+        first = False
+
+    def _search_group(args: tuple) -> tuple[str, list[str]]:
+        et, tq, sp = args
+        return et, web_search(tq, results_per_query=8, delay=1.5, seed_urls_path=sp)
+
+    with ThreadPoolExecutor(max_workers=len(search_args) or 1) as search_ex:
+        for et, urls in search_ex.map(_search_group, search_args):
+            with url_type_lock:
+                for url in urls:
+                    if url not in url_type_map:
+                        url_type_map[url] = et
+            _log(f"[SCOUT] [{et}] → {sum(1 for v in url_type_map.values() if v == et)} URLs")
+
+    summary['total_urls'] = len(url_type_map)
+    _log(f"[SCOUT] Found {len(url_type_map)} unique URLs to process")
+
+    if not url_type_map:
         _log("[SCOUT] WARNING: No URLs found from any source!")
         return summary
 
-    # Step 3-5: Process each URL
+    # Per-URL pipeline — each URL is fully independent, run in parallel
+    lock = threading.Lock()
     processed = 0
-    for i, url in enumerate(urls):
-        if processed >= max_leads:
-            _log(f"[SCOUT] Reached max leads ({max_leads}), stopping.")
-            break
+    url_items = list(url_type_map.items())
+    total_urls = len(url_items)
 
-        _log(f"[SCOUT] [{i+1}/{len(urls)}] Processing: {url}")
+    def _process_url(args: tuple) -> Optional[dict]:
+        """Scrape → dedup → score → verify → hook → push for one URL."""
+        idx, url, event_type = args
+        _at = AirtableAPI(
+            api_key=settings.AIRTABLE_API_KEY,
+            base_id=settings.AIRTABLE_BASE_ID,
+            leads_table=settings.LEADS_TABLE,
+            speakers_table=settings.SPEAKERS_TABLE,
+        )
+        result = {
+            'scraped': 0, 'scored': 0, 'pushed': 0,
+            'skipped_scrape_fail': 0, 'skipped_duplicate': 0,
+            'skipped_score_fail': 0, 'skipped_rejected': 0,
+            'triage': None, 'lead': None,
+        }
 
-        # Step 3a: Scrape
+        _log(f"[SCOUT] [{idx}/{total_urls}] Processing: {url} [{event_type}]")
+
         scraped = scrape_page(url)
         if not scraped:
-            summary['skipped_scrape_fail'] += 1
-            _log(f"[SCOUT] [{i+1}] SKIP: Scrape failed for {url}")
-            continue
-        summary['scraped'] += 1
+            result['skipped_scrape_fail'] = 1
+            _log(f"[SCOUT] [{idx}] SKIP: Scrape failed for {url}")
+            return result
+        result['scraped'] = 1
 
         conf_name = scraped.get('title', url)[:200]
         if not conf_name or conf_name == url:
-            conf_name = url.split('/')[2]  # Use domain as fallback
+            conf_name = url.split('/')[2]
+        _log(f"[SCOUT] [{idx}] Title: {conf_name}")
 
-        _log(f"[SCOUT] [{i+1}] Title: {conf_name}")
+        if not dry_run and _at.lead_exists(speaker_id, conf_name):
+            result['skipped_duplicate'] = 1
+            _log(f"[SCOUT] [{idx}] SKIP: Duplicate")
+            return result
 
-        # Step 3b: Check for duplicates
-        if not dry_run and airtable.lead_exists(speaker_id, conf_name):
-            summary['skipped_duplicate'] += 1
-            _log(f"[SCOUT] [{i+1}] SKIP: Duplicate")
-            continue
-
-        # Step 3c: Score with Claude
         score_result = score_lead_with_claude(
             scraped=scraped,
             profile=profile,
@@ -136,33 +176,30 @@ def run_scout(
             model=settings.CLAUDE_MODEL,
         )
         if not score_result:
-            summary['skipped_score_fail'] += 1
-            _log(f"[SCOUT] [{i+1}] SKIP: Scoring failed")
-            continue
-        summary['scored'] += 1
+            result['skipped_score_fail'] = 1
+            _log(f"[SCOUT] [{idx}] SKIP: Scoring failed")
+            return result
+        result['scored'] = 1
 
         match_score = score_result['match_score']
         triage = score_result['triage']
         best_topic = score_result['best_topic']
-        summary['triage_counts'][triage] += 1
+        result['triage'] = triage
+        _log(f"[SCOUT] [{idx}] Score: {match_score}/100 → {triage} | Topic: {best_topic}")
 
-        _log(f"[SCOUT] [{i+1}] Score: {match_score}/100 → {triage} | Topic: {best_topic}")
-
-        # Step 3d: Verify lead quality
         verification = verify_lead(
             lead_data={'Conference Name': conf_name, 'Match Score': match_score, 'Event Location': scraped.get('location', '')},
             scraped=scraped,
             profile=profile,
             api_key=settings.CLAUDE_API_KEY,
         )
-        _log(f"[SCOUT] [{i+1}] Verification: {verification['status']} — {verification.get('notes', '')}")
+        _log(f"[SCOUT] [{idx}] Verification: {verification['status']} — {verification.get('notes', '')}")
 
         if verification['status'] == 'Rejected':
-            summary['skipped_rejected'] += 1
-            _log(f"[SCOUT] [{i+1}] SKIP: Rejected by verifier")
-            continue
+            result['skipped_rejected'] = 1
+            _log(f"[SCOUT] [{idx}] SKIP: Rejected by verifier")
+            return result
 
-        # Step 3e: Generate hook (skip for RED — poor match)
         hook = ''
         cta = ''
         if match_score >= 35:
@@ -175,11 +212,10 @@ def run_scout(
             )
             hook = pitch_result.get('hook', '')
             cta = pitch_result.get('cta', '')
-            _log(f"[SCOUT] [{i+1}] Hook generated ({len(hook)} chars)")
+            _log(f"[SCOUT] [{idx}] Hook generated ({len(hook)} chars)")
         else:
-            _log(f"[SCOUT] [{i+1}] Hook SKIPPED (RED lead, score < 35)")
+            _log(f"[SCOUT] [{idx}] Hook SKIPPED (RED lead, score < 35)")
 
-        # Step 3f: Build Airtable payload
         lead_payload = {
             'Conference Name': conf_name,
             'Date Found': date.today().isoformat(),
@@ -194,41 +230,63 @@ def run_scout(
             'speaker_id': speaker_id,
             'Verification Status': verification['status'],
             'Verification Notes': verification.get('notes', ''),
+            'Type': event_type,
         }
-
-        # Add optional fields only if present
         if scraped.get('location'):
             lead_payload['Event Location'] = scraped['location']
         if scraped.get('emails'):
             lead_payload['Contact Email'] = scraped['emails'][0]
         if scraped.get('linkedin_links'):
             lead_payload['Contact LinkedIn'] = scraped['linkedin_links'][0]
-
-        # Parse event date if possible
         event_date_iso = _parse_date_to_iso(scraped.get('event_date_raw', ''))
         if event_date_iso:
             lead_payload['Event Date'] = event_date_iso
 
-        # Step 3g: Push to Airtable
         if dry_run:
-            _log(f"[SCOUT] [{i+1}] DRY RUN — would push: {conf_name}")
-            summary['pushed'] += 1
+            _log(f"[SCOUT] [{idx}] DRY RUN — would push: {conf_name}")
+            result['pushed'] = 1
         else:
-            result = airtable.push_lead(lead_payload)
-            if result:
-                summary['pushed'] += 1
-                _log(f"[SCOUT] [{i+1}] PUSHED to Airtable: {conf_name}")
+            push_result = _at.push_lead(lead_payload)
+            if push_result:
+                result['pushed'] = 1
+                _log(f"[SCOUT] [{idx}] PUSHED to Airtable: {conf_name}")
             else:
-                _log(f"[SCOUT] [{i+1}] PUSH FAILED (may be duplicate): {conf_name}")
+                _log(f"[SCOUT] [{idx}] PUSH FAILED (may be duplicate): {conf_name}")
 
-        summary['leads'].append({
+        result['lead'] = {
             'conference': conf_name,
             'score': match_score,
             'triage': triage,
             'topic': best_topic,
             'url': url,
-        })
-        processed += 1
+        }
+        return result
+
+    import os as _os
+    max_workers = int(_os.getenv('SCOUT_WORKERS', '5'))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_process_url, (i + 1, url, et)): url
+            for i, (url, et) in enumerate(url_items)
+        }
+        for future in as_completed(futures):
+            res = future.result()
+            if res is None:
+                continue
+            with lock:
+                for key in ('scraped', 'scored', 'pushed', 'skipped_scrape_fail',
+                            'skipped_duplicate', 'skipped_score_fail', 'skipped_rejected'):
+                    summary[key] += res[key]
+                if res['triage']:
+                    summary['triage_counts'][res['triage']] += 1
+                if res['lead']:
+                    summary['leads'].append(res['lead'])
+                    processed += 1
+                if processed >= max_leads:
+                    _log(f"[SCOUT] Reached max leads ({max_leads}), cancelling remaining.")
+                    for f in futures:
+                        f.cancel()
+                    break
 
     # Print summary
     _log(f"[SCOUT] ====== RUN COMPLETE ======")

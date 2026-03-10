@@ -140,15 +140,22 @@ def _ensure_profile_exists(speaker_id: str, profile_path: str) -> str:
 # Max scout RUNS per week per tier
 _TIER_MAX_SCOUTS = {
     'Free': 1,
-    'Starter': 3,
-    'Pro': 8,
+    'Starter': 4,
+    'Pro': 12,
 }
 
-# Max LEADS returned per scout run per tier
+# Max LEADS returned per scout run per tier (9999 = unlimited)
 _TIER_MAX_LEADS = {
-    'Free': 5,
-    'Starter': 10,
-    'Pro': 25,
+    'Free': 10,
+    'Starter': 9999,
+    'Pro': 9999,
+}
+
+# Max speaker personas (profiles) per account email per tier
+_TIER_MAX_PERSONAS = {
+    'Free': 1,
+    'Starter': 1,
+    'Pro': 3,
 }
 
 
@@ -856,17 +863,21 @@ def register_speaker(body: SpeakerRegistration):
     """Register a new speaker. Generates a unique speaker_id."""
     at = get_airtable()
 
-    # Check for duplicate email
-    existing = at.get_speaker_by_email(body.email)
-    if existing:
-        existing_fields = existing.get('fields', {})
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "An account with this email already exists.",
-                "speaker_id": existing_fields.get('speaker_id', ''),
-            }
-        )
+    # Enforce persona limit per email
+    existing_personas = at.list_speakers_by_email(body.email)
+    if existing_personas:
+        plan = (existing_personas[0].get('fields', {}).get('Plan') or 'Free').strip()
+        max_personas = _TIER_MAX_PERSONAS.get(plan, 1)
+        if len(existing_personas) >= max_personas:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": f"Persona limit reached for your {plan} plan ({max_personas} persona{'s' if max_personas > 1 else ''} allowed).",
+                    "plan": plan,
+                    "max_personas": max_personas,
+                    "current_personas": len(existing_personas),
+                }
+            )
 
     # Generate unique speaker_id: slug from name + short UUID
     name_slug = body.full_name.lower().replace(' ', '_').replace('.', '')
