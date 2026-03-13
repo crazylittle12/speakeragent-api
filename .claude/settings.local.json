@@ -21,7 +21,9 @@
       "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 8000 | Select-Object OwningProcess\")",
       "Bash(powershell -Command \"Get-Process -Id 47488 | Select-Object Id, Name, Path, CommandLine\")",
       "Bash(ls -la /d/workspace/nodejs/speakeragent/speakeragent-api/*.py)",
-      "Bash(find /d/workspace/nodejs/speakeragent/speakeragent-api/src -type f -name *.py)"
+      "Bash(find /d/workspace/nodejs/speakeragent/speakeragent-api/src -type f -name *.py)",
+      "WebFetch(domain:docs.apify.com)",
+      "WebFetch(domain:apify.com)"
     ]
   }
 }

@@ -182,24 +182,13 @@ def create_profile_and_run_scout(
         profile_path = save_profile(speaker_id, profile, persona_record_id)
         logger.info(f'[PROFILE] Saved → {profile_path}')
 
-        # Lazy import to avoid circular dependency (dashboard_api imports profile_utils)
-        from src.api.dashboard_api import _run_scout_for_speaker
-        _run_scout_for_speaker(speaker_id, profile_path, persona_record_id)
-
-        # Launch Apify podcast scraper concurrently — runs in parallel with scout results
-        import threading as _threading
+        # Step 1: Run Apify podcast scraper first — scout runs only after this completes
         from src.api.podcast_scraper import run_apify_podcast_scraper
-        _podcast_thread = _threading.Thread(
-            target=run_apify_podcast_scraper,
-            args=(speaker_id, profile, persona_record_id),
-            daemon=True,
-            name=f'apify-podcast-{speaker_id}',
-        )
-        _podcast_thread.start()
-        logger.info(
-            f'[PROFILE] Apify podcast scraper thread launched for {speaker_id} '
-            f'(thread={_podcast_thread.name})'
-        )
+        logger.info(f'[PROFILE] Starting Apify podcast scraper for {speaker_id} — scout will wait')
+        run_apify_podcast_scraper(speaker_id, profile, persona_record_id)
+        logger.info(f'[PROFILE] Apify podcast scraper finished for {speaker_id}')
+
+        # Scout is disabled — Apify handles the full pipeline (scoring, pitch, contacts, leads)
 
     except Exception as e:
         logger.error(f'[PROFILE] Failed for {speaker_id}: {e}', exc_info=True)

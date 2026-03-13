@@ -97,8 +97,15 @@ def run_scout(
     _log(f"[SCOUT] Seed URL path: {seed_path} (exists={Path(seed_path).exists()})")
 
     query_groups: dict[str, list[str]] = defaultdict(list)
+    podcast_query_count = 0
     for query, event_type in typed_queries:
+        if event_type == 'Podcast':
+            podcast_query_count += 1
+            continue  # Podcast leads are sourced from Apify, not web search
         query_groups[event_type].append(query)
+
+    _log(f"[SCOUT] Podcast queries delegated to Apify ({podcast_query_count} skipped from web search)")
+    _log(f"[SCOUT] Running web search for {len(query_groups)} event type(s): {list(query_groups.keys())}")
 
     # Search all type groups in parallel (first-match-wins per URL)
     url_type_map: dict[str, str] = {}

@@ -30,7 +30,7 @@ class Settings:
     ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')
 
     # Apify — podcast directory scraper (optional; scraper skips gracefully if absent)
-    APIFY_TOKEN = os.getenv('APIFY_TOKEN', '')
+    APIFY_TOKEN = os.getenv('APIFY_TOKEN_PODCAST_SCRAPER', '')
 
     # Scheduler
     ENABLE_CRON = os.getenv('ENABLE_CRON', 'true').lower() == 'true'

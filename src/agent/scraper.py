@@ -394,91 +394,21 @@ def web_search(queries: list[str],
     2. SerpAPI (Google Search) — requires SERP_API_KEY
     3. Serper (Google Search) — requires SERPER_API_KEY
     4. Bing scraping — fallback when no API keys
+
+    NOTE: Web search is currently disabled. Returns seed URLs only.
     """
+    logger.info("[SEARCH] web_search is DISABLED — returning seed URLs only")
     all_urls = []
     seen = set()
-    seed_count = 0
-
-    # ALWAYS load seed URLs first — these are our guaranteed floor
     if seed_urls_path:
         seed_urls = _load_seed_urls(seed_urls_path)
-        seed_count = len(seed_urls)
         for u in seed_urls:
             if u not in seen:
                 seen.add(u)
                 all_urls.append(u)
-        logger.info(f"[SEARCH] Loaded {seed_count} seed URLs as guaranteed base")
+        logger.info(f"[SEARCH] Loaded {len(all_urls)} seed URLs")
     else:
-        logger.warning("[SEARCH] No seed_urls_path provided")
-
-    # Try Tavily first, then SerpAPI, then Serper, fall back to Bing
-    tavily_key = os.getenv('TAVILY_API_KEY', '')
-    serp_key = os.getenv('SERP_API_KEY', '')
-    serper_key = os.getenv('SERPER_API_KEY', '')
-    if tavily_key:
-        logger.info("[SEARCH] Using Tavily AI Search")
-        search_urls = _tavily_search(queries, results_per_query, delay)
-        if not search_urls:
-            logger.warning("[SEARCH] Tavily returned 0 results, falling back to Bing")
-            search_urls = _bing_search(queries, results_per_query, delay)
-        else:
-            logger.info(f"[SEARCH] Tavily total: {len(search_urls)} unique URLs")
-    elif serp_key:
-        logger.info("[SEARCH] Using SerpAPI")
-        organic_urls = _serpapi_search(queries, results_per_query, delay)
-        events_urls = _serpapi_events_search(queries, delay)
-        news_urls = _serpapi_news_search(queries, min(results_per_query, 5), delay)
-        jobs_urls = _serpapi_jobs_search(queries, delay)
-        logger.info(f"[SEARCH] SerpAPI: organic={len(organic_urls)} events={len(events_urls)} "
-                    f"news={len(news_urls)} jobs={len(jobs_urls)}")
-
-        # Merge all SerpAPI results (events + jobs first — highest signal)
-        search_urls = []
-        seen_search: set = set()
-        for u in events_urls + jobs_urls + organic_urls + news_urls:
-            if u not in seen_search:
-                seen_search.add(u)
-                search_urls.append(u)
-
-        if not search_urls:
-            logger.warning("[SEARCH] SerpAPI returned 0 results, falling back to Bing")
-            search_urls = _bing_search(queries, results_per_query, delay)
-        else:
-            logger.info(f"[SEARCH] SerpAPI total: {len(search_urls)} unique URLs")
-    elif serper_key:
-        logger.info("[SEARCH] Using Serper")
-        organic_urls = _serper_search(queries, results_per_query, delay)
-        news_urls = _serper_news_search(queries, min(results_per_query, 5), delay)
-        logger.info(f"[SEARCH] Serper: organic={len(organic_urls)} news={len(news_urls)}")
-
-        search_urls = []
-        seen_search: set = set()
-        for u in organic_urls + news_urls:
-            if u not in seen_search:
-                seen_search.add(u)
-                search_urls.append(u)
-
-        if not search_urls:
-            logger.warning("[SEARCH] Serper returned 0 results, falling back to Bing")
-            search_urls = _bing_search(queries, results_per_query, delay)
-        else:
-            logger.info(f"[SEARCH] Serper total: {len(search_urls)} unique URLs")
-    else:
-        logger.warning("[SEARCH] No SERP_API_KEY or SERPER_API_KEY, using Bing")
-        search_urls = _bing_search(queries, results_per_query, delay)
-
-    # Merge search results (deduplicated, normalized)
-    for u in search_urls:
-        u = normalize_url(u)
-        if u not in seen:
-            seen.add(u)
-            all_urls.append(u)
-
-    if not all_urls:
-        logger.warning("[SEARCH] No URLs found from any source!")
-    else:
-        logger.info(f"[SEARCH] Total: {len(all_urls)} URLs ({seed_count} seed + {len(search_urls)} search)")
-
+        logger.warning("[SEARCH] No seed_urls_path provided — returning empty list")
     return all_urls
 
 

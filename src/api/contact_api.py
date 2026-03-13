@@ -131,18 +131,25 @@ def get_contact(contact_id: str, _: None = Depends(verify_api_key)):
 @router.patch('/api/contacts/{contact_id}')
 def update_contact(contact_id: str, body: ContactUpdate, _: None = Depends(verify_api_key)):
     """Update a contact card."""
+    logger.info("[update_contact] contact_id=%s body=%s", contact_id, body.model_dump(exclude_none=True))
+
     if body.status and body.status not in VALID_CONTACT_STATUSES:
+        logger.warning("[update_contact] 400 — invalid status=%r (valid: %s)", body.status, sorted(VALID_CONTACT_STATUSES))
         raise HTTPException(status_code=400, detail=f'Invalid status. Must be one of: {", ".join(sorted(VALID_CONTACT_STATUSES))}')
     if body.contact_type and body.contact_type not in VALID_CONTACT_TYPES:
+        logger.warning("[update_contact] 400 — invalid contact_type=%r (valid: %s)", body.contact_type, sorted(VALID_CONTACT_TYPES))
         raise HTTPException(status_code=400, detail=f'Invalid contact_type. Must be one of: {", ".join(sorted(VALID_CONTACT_TYPES))}')
 
     at = _get_airtable()
     record = at.get_contact_by_id(contact_id)
     if not record:
+        logger.warning("[update_contact] 404 — contact_id=%s not found", contact_id)
         raise HTTPException(status_code=404, detail='Contact not found')
 
     fields = _body_to_fields(body)
+    logger.info("[update_contact] mapped fields=%s", fields)
     if not fields:
+        logger.warning("[update_contact] 400 — no fields after mapping, body was: %s", body.model_dump(exclude_none=True))
         raise HTTPException(status_code=400, detail='No fields provided to update')
 
     updated = at.update_contact(contact_id, fields)

@@ -271,20 +271,29 @@ def get_persona_leads(speaker_id: str, persona_id: str, _: None = Depends(verify
 
 @router.post('/api/speaker/{speaker_id}/persona/{persona_id}/scout', status_code=202)
 def run_scout_for_persona(speaker_id: str, persona_id: str, _: None = Depends(verify_api_key)):
-    """Trigger a scout run for a specific persona."""
+    """Trigger a full scout run for a specific persona.
+
+    Mirrors the registration flow exactly:
+      1. Load profile JSON (rebuild from Airtable if missing)
+      2. Run Apify podcast scraper (blocks until done or 30 min timeout)
+      3. Run scout after Apify completes
+    Both steps run inside a single background thread.
+    """
+    import json as _json
     import threading
     at = _get_airtable()
 
-    logger.info(f"Received request to run scout for speaker_id={speaker_id} persona_id={persona_id}")
+    logger.info(f"[SCOUT] Received manual scout request — speaker={speaker_id} persona={persona_id}")
 
+    # Verify persona exists and belongs to this speaker
     record = at.get_persona_by_id(persona_id)
     if not record:
         raise HTTPException(status_code=404, detail='Persona not found')
     if record.get('fields', {}).get('speaker_id') != speaker_id:
         raise HTTPException(status_code=403, detail='Persona does not belong to this speaker')
 
-    # Check scout quota on the Speakers row
-    from src.api.dashboard_api import _check_and_reset_plan, _run_scout_for_speaker
+    # Check scout quota before spawning the thread
+    from src.api.dashboard_api import _check_and_reset_plan
     plan_info = _check_and_reset_plan(speaker_id)
     if plan_info is None:
         raise HTTPException(status_code=429, detail='Scout quota exhausted for this billing period')
@@ -297,12 +306,52 @@ def run_scout_for_persona(speaker_id: str, persona_id: str, _: None = Depends(ve
         )
 
     profile_path = f'config/speaker_profiles/{speaker_id}_{persona_id}.json'
-    logger.info(f"Triggering scout for speaker {speaker_id} persona {persona_id}. Remaining quota: {remaining}. Profile path: {profile_path}")
-    threading.Thread(
-        target=_run_scout_for_speaker,
-        args=(speaker_id, profile_path, persona_id),
+    logger.info(
+        f"[SCOUT] Quota OK ({scouts_used}/{max_scout_runs} used, {remaining} remaining) — "
+        f"profile={profile_path}"
+    )
+
+    # Load profile — rebuild from Airtable if file is missing
+    profile = {}
+    try:
+        with open(profile_path) as f:
+            profile = _json.load(f)
+        logger.info(f"[SCOUT] Profile loaded from {profile_path} ({len(profile)} keys)")
+    except FileNotFoundError:
+        logger.warning(
+            f"[SCOUT] Profile file not found at {profile_path} — "
+            f"rebuilding from Airtable fields"
+        )
+        from src.api.profile_utils import build_profile_from_fields, save_profile
+        persona_fields = record.get('fields', {})
+        speaker = at.get_speaker(speaker_id)
+        if speaker:
+            persona_fields.setdefault('full_name', speaker.get('fields', {}).get('full_name', ''))
+        profile = build_profile_from_fields(persona_fields)
+        save_profile(speaker_id, profile, persona_id)
+        logger.info(f"[SCOUT] Rebuilt and saved profile for {speaker_id}/{persona_id}")
+    except Exception as e:
+        logger.warning(f"[SCOUT] Could not load profile — podcast scraper will be skipped: {e}")
+
+    def _run_apify_then_scout():
+        """Run Apify podcast scraper in a background thread."""
+        if profile:
+            from src.api.podcast_scraper import run_apify_podcast_scraper
+            logger.info(f"[SCOUT] Starting Apify podcast scraper for {speaker_id}")
+            run_apify_podcast_scraper(speaker_id, profile, persona_id)
+            logger.info(f"[SCOUT] Apify podcast scraper finished for {speaker_id}")
+        else:
+            logger.warning(f"[SCOUT] No profile available — skipping Apify")
+
+        # Scout is disabled — Apify handles the full pipeline (scoring, pitch, contacts, leads)
+
+    thread = threading.Thread(
+        target=_run_apify_then_scout,
         daemon=True,
-    ).start()
+        name=f'apify-then-scout-{speaker_id}',
+    )
+    thread.start()
+    logger.info(f"[SCOUT] Background thread launched — thread={thread.name}")
 
     return {
         'status': 'started',
