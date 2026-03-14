@@ -892,6 +892,7 @@ def register_speaker(body: SpeakerRegistration):
     persona_fields = _persona_fields_from_body(body)
     persona_fields['speaker_id'] = speaker_id
     persona_fields['created_at'] = date.today().isoformat()
+    persona_fields['scout_status'] = 'Running'
     # persona_fields.setdefault('status', 'active')
     persona_record = at.create_persona(persona_fields)
     if not persona_record:

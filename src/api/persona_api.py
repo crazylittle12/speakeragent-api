@@ -333,15 +333,22 @@ def run_scout_for_persona(speaker_id: str, persona_id: str, _: None = Depends(ve
     except Exception as e:
         logger.warning(f"[SCOUT] Could not load profile — podcast scraper will be skipped: {e}")
 
+    at.update_persona(record['id'], {'scout_status': 'Running'})
+    logger.info(f"[SCOUT] Marked scout_status=Running for persona {persona_id}")
+
     def _run_apify_then_scout():
         """Run Apify podcast scraper in a background thread."""
-        if profile:
-            from src.api.podcast_scraper import run_apify_podcast_scraper
-            logger.info(f"[SCOUT] Starting Apify podcast scraper for {speaker_id}")
-            run_apify_podcast_scraper(speaker_id, profile, persona_id)
-            logger.info(f"[SCOUT] Apify podcast scraper finished for {speaker_id}")
-        else:
-            logger.warning(f"[SCOUT] No profile available — skipping Apify")
+        try:
+            if profile:
+                from src.api.podcast_scraper import run_apify_podcast_scraper
+                logger.info(f"[SCOUT] Starting Apify podcast scraper for {speaker_id}")
+                run_apify_podcast_scraper(speaker_id, profile, persona_id)
+                logger.info(f"[SCOUT] Apify podcast scraper finished for {speaker_id}")
+            else:
+                logger.warning(f"[SCOUT] No profile available — skipping Apify")
+        finally:
+            at.update_persona(record['id'], {'scout_status': 'Completed'})
+            logger.info(f"[SCOUT] Marked scout_status=Completed for persona {persona_id}")
 
         # Scout is disabled — Apify handles the full pipeline (scoring, pitch, contacts, leads)
 
